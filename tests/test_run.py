@@ -31,6 +31,13 @@ def test_run_writes_metrics_and_predictions(tmp_path, monkeypatch, model):
     assert list(preds.columns) == ["fold", "group", "y", "p", "pred"] and len(preds) == 300
 
 
+def test_nn_is_reproducible_for_a_seed():
+    fold = toy_folds(None)[0]
+    first = runner.fit_predict("nn", fold, seed=0)[1]
+    second = runner.fit_predict("nn", fold, seed=0)[1]
+    np.testing.assert_allclose(first, second, atol=1e-5)
+
+
 def test_unknown_model_raises(tmp_path, monkeypatch):
     monkeypatch.setitem(runner.DATASETS, "toy", toy_folds)
     with pytest.raises(ValueError, match="model"):

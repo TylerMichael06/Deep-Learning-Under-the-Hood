@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import torch
 
 from obdfault.data import dieselobd, enginead, enginefaultdb
 from obdfault.metrics import binary_metrics, pick_threshold
@@ -18,6 +19,7 @@ def fit_predict(model_name, fold, seed):
         prep = window_features if windows else (lambda X: X)
         clf = baseline(model_name, seed).fit(prep(fold.X_train), fold.y_train)
         return clf.predict_proba(prep(fold.X_val))[:, 1], clf.predict_proba(prep(fold.X_test))[:, 1]
+    torch.manual_seed(seed)  # before construction, so weight init is seeded too
     model = (CNN1d if windows else MLP)(fold.X_train)
     train_torch(model, fold, seed=seed)
     return predict_proba(model, fold.X_val), predict_proba(model, fold.X_test)
