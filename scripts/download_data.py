@@ -3,7 +3,6 @@ import argparse
 import json
 import re
 import subprocess
-import urllib.request
 from pathlib import Path
 
 DATA = Path(__file__).resolve().parent.parent / "data"
@@ -24,8 +23,9 @@ def main() -> None:
         if not (DATA / name).exists():
             subprocess.run(["git", "clone", "--depth", "1", url, str(DATA / name)], check=True)
 
-    with urllib.request.urlopen(ENGINEAD_API) as response:
-        files = [f["dataFile"] for f in json.load(response)["data"]["latestVersion"]["files"]]
+    # curl, not urllib: it uses the system CA store (python.org builds on macOS ship without one)
+    listing = subprocess.run(["curl", "-sL", "--fail", ENGINEAD_API], check=True, capture_output=True).stdout
+    files = [f["dataFile"] for f in json.loads(listing)["data"]["latestVersion"]["files"]]
     files.sort(key=lambda d: int(re.search(r"truck_(\d+)", d["filename"]).group(1)))
     out = DATA / "EngineAD"
     out.mkdir(exist_ok=True)
@@ -34,7 +34,7 @@ def main() -> None:
         if dest.exists():
             continue
         part = dest.with_suffix(".part")
-        urllib.request.urlretrieve(ENGINEAD_FILE.format(d["id"]), part)
+        subprocess.run(["curl", "-sL", "--fail", "-o", str(part), ENGINEAD_FILE.format(d["id"])], check=True)
         part.rename(dest)
         print("downloaded", dest.name)
 
