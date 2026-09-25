@@ -1,102 +1,83 @@
 # OBD-II Predictive Maintenance: High-Level Design
 
 Status: draft for team review.
+
 ## 1. Goal
 
-Detect anomalous engine behavior from OBD-II telemetry. Validate the approach on public labeled fault datasets (EngineFaultDB, EngineAD, HIL), then fine-tune on healthy driving data from one team vehicle and flag deviations from that car's normal behavior.
+Two stages:
 
-Success:
-- **Public data:** measurable detection quality against known labels.
-- **Team car:** no false alarms on ordinary driving, and any real anomaly (e.g. a DTC) gets flagged. We have no labeled failures on this car, and the final report must say what we could and could not verify.
+1. **Public data:** one binary classifier per labeled dataset that answers "engine fault: yes/no", evaluated against known labels.
+2. **Team car:** learn the car's normal behavior from healthy OBD-II driving data and flag deviations. The car has no fault examples, so this stage stays unsupervised (reconstruction error), and the final report must say what we could and could not verify.
 
 ## 2. Decisions so far
 
 | Decision | Choice |
 |---|---|
-| Scope | Whole pipeline, phased to match the proposal timeline |
-| Framework | PyTorch (+ scikit-learn for the baseline) |
-| Modeling | Reconstruction-error anomaly detection, staged: simple baseline (MVP) then sequence autoencoder |
-| Repo style | Python package + thin scripts; notebooks for EDA only |
-| Compute | Undecided, so keep code environment-agnostic (no cloud-specific code) |
+| Framework | PyTorch (+ scikit-learn for baselines) |
+| Public-data model | Separate binary classifier per dataset; inputs barely overlap, so no merged model |
+| Car-stage model | Reconstruction-error anomaly detection (classifier can't train without fault examples) |
+| Splits | By group (vehicle / session / engine), never random rows |
+| Compute | Undecided; keep code environment-agnostic |
 
-Why reconstruction: the team car only has presumed-healthy data, so a supervised healthy/faulty classifier cannot be fine-tuned on it. A model that learns "normal" from healthy data alone works in both stages.
+## 3. Datasets
 
-## 3. Architecture
+| Dataset | Format / license | Binary label | Features | Split unit | Caveat |
+|---|---|---|---|---|---|
+| **EngineFaultDB** | 56k tabular rows, CSV, GPL-3.0 | `Fault` 0 = no fault; 1 rich mixture, 2 lean mixture, 3 low ignition voltage = fault | MAP, TPS, RPM, Speed, Lambda, AFR (OBD-like) + Force, Power, consumption, CO, HC, CO2, O2 | No group ID; split by row order within each class | Lab rig. 71% of rows are faults. Gas-analyzer features won't exist on the car. |
+| **OBD-Dataset** (Lounis) | CSV/XLSX, CC BY 4.0 | Vehicle has DTCs (5 vehicles) vs. fault-free (3) | LOAD_PCT, ECT, MAP, RPM, VSS, IAT, MAF, FRP, BARO, VPWR, AAT | `vehicle_id` | Labels are per vehicle, so we must test on held-out vehicles (leave-one-vehicle-out). With only 8 vehicles, results will be noisy. Closest signal match to our dongle. |
+| **EngineAD** | 25 pickle files, 135–304 MB each (~5 GB), CC BY-NC 4.0 | Expert normal / anomaly | 8 PCA components × 300-step windows | Vehicle (file) | Can't be mapped back to OBD-II signals, so it's a standalone benchmark. Download a few vehicles first. |
+| **Kaggle obdii-ds3** | CSV/XLSX, CC0 | **None** | OBD-II PIDs from driver-behavior experiments | Trip / driver | Not usable for the classifier. Set aside as healthy-only data for the car stage. |
 
-```
-Public datasets ──┐
-                  ├─► loaders → common schema → windowing/normalization ─┐
-Car OBD-II logger ┘                                                      │
-                                                                         ▼
-                                            pretrain on healthy public windows
-                                                                         │
-                                            evaluate vs. public labels   │
-                                                                         ▼
-                                            fine-tune on car healthy windows
-                                                                         │
-                                                                         ▼
-                                            score drives → flag windows → report
-```
+## 4. Classifier pipeline (public stage)
 
 ```
-src/
-  data/        # one loader per dataset + car logs → common schema
-  logging/     # OBD-II collection script (python-OBD wrapper) → raw CSV per drive
-  features/    # windowing, per-source normalization, missing-channel handling
-  models/
-    baseline.py   # Isolation Forest / per-sample autoencoder (MVP)
-    sequence.py   # LSTM or TCN autoencoder
-  train.py     # modes: pretrain-public, finetune-car
-  evaluate.py  # modes: public-metrics, car-report
-notebooks/     # EDA only; anything reused moves into src/
-tests/
+loader(dataset) → X, y (0/1), group ─► group-safe split (train/val/test)
+                                        │
+                     fit scaler on train only
+                                        │
+          baselines: logistic regression, gradient boosting
+          PyTorch:   MLP (tabular) | 1D CNN (EngineAD windows)
+                                        │
+          threshold chosen on val ─► metrics on test ─► artifacts/<dataset>/<run>/
 ```
 
-Each module has one owner and a narrow interface (frames in, frames/tensors out), so teammates can work in parallel.
+- **Loader contract:** each dataset loader returns `X` (features), `y` (0/1), and `group` (split key). A dataset's logic lives only in its loader; splitting, training and metrics are shared.
+- **Class imbalance:** use a class-weighted loss, and pick the threshold on the validation set, not a fixed 0.5.
+- **Metrics:** F1, AUROC, AUPRC and balanced accuracy, plus a confusion matrix. For OBD-Dataset, also report per-vehicle predictions, since each held-out vehicle is effectively one test case.
+- **Independent implementation:** each team member builds their own version on their personal branch, and the team compares them later. This branch implements all three classifiers from scratch as a small `src/` package with one loader per dataset.
+- **EngineFaultDB split:** there's no group ID, and rows are likely time-ordered. Split each class into contiguous blocks (70/15/15) rather than random rows, so neighboring samples don't leak into the test set.
 
-## 4. Data
+## 5. Car stage (unchanged in intent)
 
-**Common schema** (superset; missing signals are `NaN`, never dropped rows):
-`timestamp`, `engine_rpm`, `vehicle_speed`, `throttle_pos`, `engine_load`, `coolant_temp`, `intake_air_temp`*, `maf`*, `fuel_trim_short`*, `fuel_trim_long`*, `dtc_codes`, `label` (`healthy`/`faulty`/`unknown`), `source` (`fault_db`/`engine_ad`/`hil`/`car`). (*may be unavailable from a consumer reader.)
+- An ELM327 logger writes one CSV per drive. First task: probe which PIDs the car actually returns.
+- Train a reconstruction model on healthy windows: a row-level masked autoencoder first, then a TCN/GRU over 30–60 s windows.
+- Set the threshold from the false-alert rate per driving hour on held-out drives. DTC events are the only real ground truth.
+- Transfer from the public stage is limited to recipe and code. Weights only transfer where signals overlap, mainly with OBD-Dataset.
 
-- **Loaders** map each dataset's native format to the schema and validate on load.
-- **Car logger** polls the ELM327 at a fixed rate (target 1–2 Hz, whatever the dongle sustains), one CSV per drive. First task: probe the real car to learn which PIDs the dongle returns. The schema is a target, not a guarantee.
-- **Windowing:** fixed-length sliding windows (e.g. 30–60 s) within a continuous session, never across session boundaries.
-- **Normalization:** z-score per source/vehicle so different baselines don't dominate.
-- Car data is labeled `unknown`; presumed healthy unless a DTC is present.
+## 6. Testing
 
-## 5. Modeling & training
+pytest, kept small:
+- each loader returns aligned `X`/`y`/`group` with labels in {0,1};
+- no group appears in more than one split;
+- scaler statistics come from the training split only;
+- model forward pass shapes are correct;
+- a short training run on tiny synthetic data beats chance.
 
-- **Stage 1 (MVP baseline):** Isolation Forest or per-sample autoencoder on window summary features. Target: internal demo in weeks 3–6.
-- **Stage 2 (main model):** LSTM/TCN autoencoder over windows. Anomaly score = mean reconstruction error per window.
-- **Pretrain:** on healthy windows from public data. Threshold from a held-out healthy validation split (e.g. a high percentile of healthy scores).
-- **Fine-tune:** input/output adapters map the car's channel set to the shared latent size. Freeze the trunk first, then unfreeze at a low learning rate. Train on car healthy windows only; set the threshold on held-out car drives.
+## 7. Timeline mapping
 
-## 6. Evaluation
+| Weeks | Work |
+|---|---|
+| 1–3 | Dataset download + loaders; group-safe split; logger PID probe |
+| 3–6 | Baselines + PyTorch classifiers on all three labeled datasets; internal demo |
+| 4–8 | Car data collection |
+| 7–10 | Car-stage reconstruction model + thresholds |
+| 10–12 | Evaluation + limitations |
+| 12–14 | Poster, report |
 
-- **Public:** split by session/engine, not random windows (avoids leakage). Metrics: AUROC, AUPRC, F1 at the chosen threshold, per-fault-type recall.
-- **Car:** false-positive rate per hour on held-out drives; manual review of flagged windows; DTC events as the only real ground truth. Optional sanity check: inject synthetic drift (e.g. coolant temp offset) into a held-out drive and confirm it gets flagged.
+## 8. Open questions / risks
 
-## 7. Errors & testing
-
-- **Errors:** logger timeouts or dropped frames → gaps marked `NaN`, session split at long gaps; unsupported PID → column stays `NaN`; schema/unit validation at the loader boundary, failing loudly.
-- **Tests (pytest, one file per module):** loaders return the schema; windows never cross sessions; splits have no session overlap; model forward/backward shapes; a tiny synthetic-data smoke test of pretrain → fine-tune → score.
-
-## 8. Timeline mapping
-
-| Weeks | Phase | Design pieces |
-|---|---|---|
-| 1–3 | Setup | repo, loaders skeleton, logger + PID probe, dataset access |
-| 3–6 | Model dev | windowing, baseline MVP, public-data eval |
-| 4–8 | Car collection | logger in use, varied drives |
-| 7–10 | Real-world | sequence model, fine-tune, car thresholds |
-| 10–12 | Evaluation | public metrics, car report, limitations |
-| 12–14 | Finalize | poster, report |
-
-## 9. Open questions / risks
-
-1. **Dataset access and licensing:** not yet checked for any of the three.
-2. **Channel overlap:** public datasets may share few signals with what the ELM327 exposes. If overlap is small, what transfers is the architecture and training recipe, not the weights. Check in weeks 1–3, before committing to the fine-tune story.
-3. **Dongle PIDs:** unknown until tested on the car.
-4. **Compute:** undecided; keep models small enough for CPU/Colab.
-5. **Sampling-rate mismatch:** the public data rates vs. ~1–2 Hz from the dongle; resampling policy needed.
+1. **EngineFaultDB labels:** the README doesn't define the fault types. Confirm 0 = no fault against the paper before training.
+2. **OBD-Dataset sample size:** 8 vehicles make per-vehicle labels a weak benchmark; report the uncertainty honestly.
+3. **EngineAD size and license:** ~5 GB, and CC BY-NC (fine for coursework).
+4. **Dongle PIDs:** unknown until tested on the car.
+5. **Comparing versions:** each branch should report the same metrics on the same kind of split, so the team meeting can compare like with like.
