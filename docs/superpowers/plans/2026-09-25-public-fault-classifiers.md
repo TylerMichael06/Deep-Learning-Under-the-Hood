@@ -113,8 +113,8 @@ testpaths = ["tests"]
 
 `.gitignore`:
 ```
-data/
-artifacts/
+/data/
+/artifacts/
 .venv/
 __pycache__/
 *.egg-info/
