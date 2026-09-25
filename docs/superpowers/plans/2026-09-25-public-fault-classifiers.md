@@ -814,13 +814,21 @@ import numpy as np
 from obdfault.splits import group_split, make_fold
 
 CHANNELS = [f"PC{i}" for i in range(1, 9)]
-# Loading a pickle can run arbitrary code, so only the classes these files actually use are allowed.
+# Loading a pickle can run arbitrary code, so only DataFrame-building classes are allowed:
+# the dataset's own layout (older pandas) plus the layout pandas 3 writes.
 ALLOWED = {
     ("builtins", "slice"),
     ("numpy", "dtype"),
     ("numpy", "ndarray"),
     ("numpy._core.multiarray", "_reconstruct"),
     ("numpy.core.multiarray", "_reconstruct"),
+    ("numpy._core.numeric", "_frombuffer"),
+    ("pandas", "DataFrame"),
+    ("pandas", "Index"),
+    ("pandas", "RangeIndex"),
+    ("pandas", "StringDtype"),
+    ("pandas.arrays", "StringArray"),
+    ("pandas._libs.arrays", "__pyx_unpickle_NDArrayBacked"),
     ("pandas._libs.internals", "_unpickle_block"),
     ("pandas.core.frame", "DataFrame"),
     ("pandas.core.indexes.base", "Index"),
@@ -1176,7 +1184,6 @@ import argparse
 import json
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from obdfault.data import dieselobd, enginead, enginefaultdb
