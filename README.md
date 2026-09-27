@@ -33,7 +33,6 @@ its generated outputs. The original CSV stays unchanged.
 
 - `engine_fault.ipynb`: all analysis and model code, with saved results.
 - `EngineFaultDB_Final.csv`: original dataset, excluded from Git.
-- `proposal.pdf`: original project proposal.
 - `requirements.txt`: Python packages.
 - `outputs/`: saved split, selected model, and results; excluded from Git.
 
