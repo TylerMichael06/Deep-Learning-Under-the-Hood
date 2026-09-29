@@ -27,30 +27,40 @@ next 20%, and is tested on the last 40%.
 Baselines (same network without fine-tuning, per-car linear model): AUROC 0.77. Results vary by about ±0.03 between runs.
 Strongest on vacuum leaks and stuck coolant sensors (AUROC 0.96-0.97); weakest on small, steady airflow/pressure errors.
 
-Full details, settings, assumptions and limitations: [`model_build_guide.md`](model_build_guide.md).
+Full details, settings, assumptions and limitations: [`model/model_build_guide.md`](model/model_build_guide.md).
 
-## Files
+## Folders
 
-| Path | What it is |
-|---|---|
-| `obd_model.py` | data loading, model, training, main evaluation, saves the final model |
-| `synthetic_test.py` | synthetic fault test with an answer key |
-| `make_figures.py` | all report figures and the summary table (`figures/`) |
-| `obd_pretrained.pt` | the trained model (starting point for fine-tuning on a new car) |
-| `*.csv` | final results |
-| `model_build_guide.md` | step-by-step guide |
+```
+model/                   the model and its code
+  obd_model.py             data loading, model, training, main evaluation, saves the final model
+  synthetic_test.py        synthetic fault test with an answer key
+  make_figures.py          all report figures and the summary table
+  obd_pretrained.pt        the trained model (starting point for fine-tuning on a new car)
+  model_build_guide.md     step-by-step guide
+results/                 final results (spreadsheets)
+  obd_results_binary.csv   main evaluation: accuracy, precision, recall, F1, false alarms for every setting
+  obd_results_faults.csv   main evaluation: per car, per fault
+  obd_results_summary.csv  main evaluation: per car (false alarms, real trouble codes)
+  synthetic_results.csv    synthetic test: scorecard
+  synthetic_answer_key.csv synthetic test: every drive, true label vs the model's label
+  synthetic_minutes.csv    synthetic test: minute-by-minute scores (used for the figures)
+figures/                 report figures and the summary table
+```
 
 ## Running it
 
 Data (not included in this repo): download the Kaggle "OBD-II datasets" by cephasax,
 <https://www.kaggle.com/datasets/cephasax/obdii-ds3>, and extract it to `Datasets/OBD-II datasets/` inside the repo folder (ignored by git).
-Needs Python 3 (`pip install -r requirements.txt`). From the repo folder:
+Needs Python 3 (`pip install -r requirements.txt`). From the `model` folder:
 
 ```
-python obd_model.py --data "Datasets/OBD-II datasets"        # main evaluation + final model (~30 min on CPU)
-python synthetic_test.py --data "Datasets/OBD-II datasets"   # synthetic fault test (~15 min)
-python make_figures.py --data "Datasets/OBD-II datasets"     # figures and summary table
+python obd_model.py --data "../Datasets/OBD-II datasets"        # main evaluation + final model (~30 min on CPU)
+python synthetic_test.py --data "../Datasets/OBD-II datasets"   # synthetic fault test (~15 min)
+python make_figures.py --data "../Datasets/OBD-II datasets"     # figures and summary table
 ```
+
+The scripts save spreadsheets to `results/` and figures to `figures/`.
 
 ## Next step
 

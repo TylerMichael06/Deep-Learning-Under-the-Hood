@@ -11,7 +11,7 @@ from sklearn.metrics import roc_curve, roc_auc_score
 import obd_model as M
 import synthetic_test as S
 
-HERE = os.path.dirname(os.path.abspath(__file__)); OUT = os.path.join(HERE, "figures")
+HERE = os.path.dirname(os.path.abspath(__file__)); OUT = M.FIGURES; RES = M.RESULTS
 BLUE, ORANGE, AQUA, INK, INK2, GRID, GREY = "#2a78d6", "#eb6834", "#1baf7a", "#0b0b0b", "#52514e", "#e4e3df", "#b4b2a9"
 NICE = {"RPM": "RPM", "SPEED": "Speed (km/h)", "LOAD": "Engine load (%)", "THROTTLE": "Throttle (%)",
         "ECT": "Coolant temp (Â°C)", "IAT": "Intake air temp (Â°C)", "MAP": "Manifold pressure (kPa)",
@@ -26,8 +26,8 @@ plt.rcParams.update({"font.size": 9, "axes.edgecolor": INK2, "axes.labelcolor": 
 
 def latest(name):
     """Use <name>_new.csv if the script had to save there because the original was open in Excel."""
-    new = os.path.join(HERE, name.replace(".csv", "_new.csv"))
-    old = os.path.join(HERE, name)
+    new = os.path.join(RES, name.replace(".csv", "_new.csv"))
+    old = os.path.join(RES, name)
     return new if os.path.exists(new) and (not os.path.exists(old) or os.path.getmtime(new) > os.path.getmtime(old)) else old
 
 def save(fig, name):
@@ -195,7 +195,7 @@ def summary_table(B, R, syn):
 # ------------------------------------------------------------------ 5. helpers for the final scores
 def synthetic_scores(tag, scoring):
     """Re-apply the final alarm rules to a saved synthetic run. Returns (minute rows, drive key, metrics per level)."""
-    rows, key = pd.read_csv(os.path.join(HERE, f"synthetic_minutes{tag}.csv")), pd.read_csv(os.path.join(HERE, f"synthetic_answer_key{tag}.csv"))
+    rows, key = pd.read_csv(os.path.join(RES, f"synthetic_minutes{tag}.csv")), pd.read_csv(os.path.join(RES, f"synthetic_answer_key{tag}.csv"))
     rows, key = S.decide(rows, key, FINAL["grace"], FINAL["drive_rule"], SYN_VARIANT[scoring])
     auc = roc_auc_score(rows.truth, rows.score)
     return rows, key, {"per minute": dict(AUROC=auc, **S.metrics(rows.truth.to_numpy(), rows.flagged.to_numpy())),

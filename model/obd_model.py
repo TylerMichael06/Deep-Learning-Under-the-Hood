@@ -39,6 +39,10 @@ from sklearn.metrics import roc_auc_score
 
 torch.manual_seed(0); np.random.seed(0)
 HERE = os.path.dirname(os.path.abspath(__file__))
+# GitHub layout: code in model/, spreadsheets in results/, figures in figures/. Anywhere else: everything next to the script.
+_repo = os.path.basename(HERE).lower() == "model"
+RESULTS = os.path.join(os.path.dirname(HERE), "results") if _repo else HERE
+FIGURES = os.path.join(os.path.dirname(HERE), "figures") if _repo else os.path.join(HERE, "figures")
 
 CH = ["RPM", "SPEED", "LOAD", "THROTTLE", "ECT", "IAT", "MAP", "MAF", "STFT1"]
 SRC = {"RPM": "ENGINE_RPM", "SPEED": "SPEED", "LOAD": "ENGINE_LOAD", "THROTTLE": "THROTTLE_POS",
@@ -416,7 +420,7 @@ FINAL_SCORING = "stuck check"   # chosen after comparing all fixes: usual 2-minu
 
 def save_csv(df, name):
     """Save next to this script; if the file is open in Excel (locked), save as <name>_new.csv instead."""
-    path = os.path.join(HERE, name.replace(".csv", TAG + ".csv"))
+    path = os.path.join(RESULTS, name.replace(".csv", TAG + ".csv"))
     try: df.to_csv(path, index=False)
     except PermissionError:
         path = path.replace(".csv", "_new.csv"); df.to_csv(path, index=False)

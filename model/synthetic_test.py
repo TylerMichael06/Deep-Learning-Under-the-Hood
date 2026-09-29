@@ -206,10 +206,10 @@ def main():
         right_sensor=(g.model_blames == g.sensor)[g.model_says == "FAULT"].mean() if g.sensor.iloc[0] else np.nan,
         median_minutes_to_alarm=g.minutes_to_alarm.median())))
     print("\n=== by scenario ===\n", per.round(2).to_string())
-    res.assign(minute_AUROC=auc).to_csv(os.path.join(HERE, f"synthetic_results{a.tag}.csv"), index=False)
+    res.assign(minute_AUROC=auc).to_csv(os.path.join(M.RESULTS, f"synthetic_results{a.tag}.csv"), index=False)
     key[["car", "drive", "fault", "sensor", "start_min", "truth", "model_says", "model_blames", "minutes_to_alarm"]].to_csv(
-        os.path.join(HERE, f"synthetic_answer_key{a.tag}.csv"), index=False)
-    rows.to_csv(os.path.join(HERE, f"synthetic_minutes{a.tag}.csv"), index=False)       # every scored minute, for make_figures.py
+        os.path.join(M.RESULTS, f"synthetic_answer_key{a.tag}.csv"), index=False)
+    rows.to_csv(os.path.join(M.RESULTS, f"synthetic_minutes{a.tag}.csv"), index=False)       # every scored minute, for make_figures.py
     print("\nsaved synthetic_results.csv, synthetic_answer_key.csv, synthetic_minutes.csv  (figures: run make_figures.py)")
 
 if __name__ == "__main__":
