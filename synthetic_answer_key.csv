@@ -1,0 +1,68 @@
+car,drive,fault,sensor,start_min,truth,model_says,model_blames,minutes_to_alarm
+car11,0,clean,,,HEALTHY,HEALTHY,,
+car11,1,Throttle signal noisy (+/-5%),THROTTLE,0.0,FAULT,FAULT,THROTTLE,5.0
+car11,2,MAF reads 15% low,MAF,0.0,FAULT,HEALTHY,,
+car11,3,"MAF reads 15% low, engine reacts",MAF,0.0,FAULT,FAULT,STFT1,5.0
+car11,4,clean,,,HEALTHY,HEALTHY,,
+car11,5,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,FAULT,IAT,5.166666666666667
+car11,6,clean,,,HEALTHY,HEALTHY,,
+car11,7,clean,,,HEALTHY,HEALTHY,,
+car11,8,Fuel trim +8% (vacuum leak),STFT1,0.0,FAULT,HEALTHY,STFT1,6.666666666666667
+car11,9,Throttle signal noisy (+/-5%),THROTTLE,0.0,FAULT,FAULT,THROTTLE,5.0
+car11,10,clean,,,HEALTHY,FAULT,,
+car11,11,clean,,,HEALTHY,HEALTHY,,
+car11,12,clean,,,HEALTHY,HEALTHY,,
+car11,13,clean,,,HEALTHY,HEALTHY,,
+car11,14,MAF reads 15% low,MAF,0.0,FAULT,HEALTHY,THROTTLE,19.0
+car11,15,clean,,,HEALTHY,HEALTHY,,
+car11,16,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,FAULT,IAT,16.0
+car11,17,"MAF reads 15% low, engine reacts",MAF,0.0,FAULT,HEALTHY,IAT,6.0
+car9,0,clean,,,HEALTHY,HEALTHY,,
+car9,1,clean,,,HEALTHY,HEALTHY,,
+car9,2,Fuel trim +8% (vacuum leak),STFT1,0.0,FAULT,FAULT,STFT1,5.0
+car9,3,clean,,,HEALTHY,HEALTHY,,
+car9,4,MAP reads +8 kPa from minute 5,MAP,5.0,FAULT,HEALTHY,STFT1,0.833333333333333
+car9,5,clean,,,HEALTHY,HEALTHY,,
+car9,6,Throttle signal noisy (+/-5%),THROTTLE,0.0,FAULT,FAULT,THROTTLE,5.0
+car9,7,Fuel trim +8% (vacuum leak),STFT1,0.0,FAULT,FAULT,STFT1,5.0
+car9,8,clean,,,HEALTHY,HEALTHY,,
+car9,9,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,HEALTHY,,
+car9,10,"MAP reads +8 kPa from minute 5, engine reacts",MAP,5.0,FAULT,FAULT,STFT1,1.166666666666667
+car9,11,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,FAULT,IAT,5.0
+car9,12,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,HEALTHY,,
+car9,13,Throttle signal noisy (+/-5%),THROTTLE,0.0,FAULT,FAULT,THROTTLE,5.0
+car9,14,Throttle signal noisy (+/-5%),THROTTLE,0.0,FAULT,HEALTHY,THROTTLE,5.0
+car9,15,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,HEALTHY,,
+car9,16,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,FAULT,IAT,5.666666666666667
+car9,17,Fuel trim +8% (vacuum leak),STFT1,0.0,FAULT,HEALTHY,STFT1,5.0
+car9,18,Fuel trim +8% (vacuum leak),STFT1,0.0,FAULT,FAULT,STFT1,5.0
+car9,19,clean,,,HEALTHY,FAULT,,
+car9,20,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,HEALTHY,IAT,19.0
+car9,21,MAP reads +8 kPa from minute 5,MAP,5.0,FAULT,HEALTHY,,
+car8,0,Throttle signal noisy (+/-5%),THROTTLE,0.0,FAULT,FAULT,LOAD,11.166666666666666
+car8,1,clean,,,HEALTHY,HEALTHY,,
+car8,2,clean,,,HEALTHY,HEALTHY,,
+car8,3,"MAP reads +8 kPa from minute 5, engine reacts",MAP,5.0,FAULT,HEALTHY,LOAD,17.833333333333332
+car8,4,Throttle signal noisy (+/-5%),THROTTLE,0.0,FAULT,HEALTHY,RPM,5.833333333333333
+car8,5,clean,,,HEALTHY,HEALTHY,,
+car8,6,Coolant sensor stuck from minute 10,ECT,10.0,FAULT,FAULT,ECT,2.833333333333334
+car8,7,clean,,,HEALTHY,HEALTHY,,
+exp2_car,0,clean,,,HEALTHY,HEALTHY,,
+exp2_car,1,clean,,,HEALTHY,HEALTHY,,
+exp2_car,2,Throttle signal noisy (+/-5%),THROTTLE,0.0,FAULT,HEALTHY,THROTTLE,5.0
+exp2_car,3,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,FAULT,IAT,7.333333333333333
+exp2_car,4,clean,,,HEALTHY,HEALTHY,,
+exp2_car,5,MAF reads 15% low,MAF,0.0,FAULT,HEALTHY,IAT,8.5
+exp2_car,6,clean,,,HEALTHY,HEALTHY,,
+exp2_car,7,Coolant sensor stuck from minute 10,ECT,10.0,FAULT,FAULT,ECT,2.666666666666666
+exp2_car,8,clean,,,HEALTHY,HEALTHY,,
+exp2_car,9,MAF reads 15% low,MAF,0.0,FAULT,HEALTHY,,
+exp2_car,10,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,FAULT,IAT,5.5
+exp2_car,11,MAF reads 15% low,MAF,0.0,FAULT,FAULT,IAT,5.0
+exp2_car,12,clean,,,HEALTHY,HEALTHY,,
+exp2_car,13,"MAP reads +8 kPa from minute 5, engine reacts",MAP,5.0,FAULT,FAULT,STFT1,1.0
+exp2_car,14,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,HEALTHY,IAT,5.0
+exp2_car,15,clean,,,HEALTHY,HEALTHY,,
+exp2_car,16,clean,,,HEALTHY,HEALTHY,,
+exp2_car,17,Coolant sensor stuck from minute 10,ECT,10.0,FAULT,FAULT,ECT,2.0
+exp2_car,18,Fuel trim +8% (vacuum leak),STFT1,0.0,FAULT,FAULT,STFT1,5.0
