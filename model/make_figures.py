@@ -16,7 +16,7 @@ BLUE, ORANGE, AQUA, INK, INK2, GRID, GREY = "#2a78d6", "#eb6834", "#1baf7a", "#0
 NICE = {"RPM": "RPM", "SPEED": "Speed (km/h)", "LOAD": "Engine load (%)", "THROTTLE": "Throttle (%)",
         "ECT": "Coolant temp (Â°C)", "IAT": "Intake air temp (Â°C)", "MAP": "Manifold pressure (kPa)",
         "MAF": "Mass air flow (g/s)", "STFT1": "Short-term fuel trim (%)"}
-FINAL = dict(method="fine-tuned (ours)", scoring="stuck check", cutoff=0.95, drive_rule=0.3, grace=5)
+FINAL = dict(method="fine-tuned (ours)", scoring="stuck check", cutoff=0.90, drive_rule=0.3, grace=5)
 SYN_VARIANT = {"shared cutoff": "", "stuck check": "only", "two-speed + stuck check": "stuck"}   # same scorings, as named in synthetic_test.py
 
 plt.rcParams.update({"font.size": 9, "axes.edgecolor": INK2, "axes.labelcolor": INK2, "xtick.color": INK2,
@@ -152,7 +152,7 @@ def fig_roc(rows):
 def fig_tradeoff(B):
     """Cutoff trade-off: catches vs false alarms per minute, final method, shared cutoff."""
     b = B[(B.method == FINAL["method"]) & (B.scoring == FINAL["scoring"]) & (B.level == "minute")].sort_values("cutoff")
-    names = {0.8: "most relaxed", 0.9: "relaxed", 0.95: "Medium (chosen)", 0.975: "strict", 0.99: "strictest"}
+    names = {0.8: "most relaxed", 0.9: "Relaxed (chosen)", 0.95: "Medium", 0.975: "strict", 0.99: "strictest"}
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(b.false_alarm_rate * 100, b.recall * 100, color=BLUE, lw=2, marker="o", ms=7)
     for _, r in b.iterrows():
@@ -188,7 +188,7 @@ def summary_table(B, R, syn):
         cell.set_edgecolor(GRID)
         if i == 0: cell.set_text_props(weight="bold", color=INK); cell.set_facecolor("#f1f0ec")
         elif "ours" in show.iloc[i - 1].model.lower(): cell.set_text_props(weight="bold")
-    ax.set_title(f"Results summary (final settings: {FINAL['scoring']}, Medium cutoff, 5-min warm-up, drive = FAULT if >30% of minutes flagged)",
+    ax.set_title(f"Results summary (final settings: {FINAL['scoring']}, Relaxed line, 5-min warm-up, drive = FAULT if >30% of minutes flagged; too-short drives excluded)",
                  loc="left", fontweight="bold", fontsize=10)
     save(fig, "table1_results_summary.png")
 
@@ -198,8 +198,8 @@ def synthetic_scores(tag, scoring):
     rows, key = pd.read_csv(os.path.join(RES, f"synthetic_minutes{tag}.csv")), pd.read_csv(os.path.join(RES, f"synthetic_answer_key{tag}.csv"))
     rows, key = S.decide(rows, key, FINAL["grace"], FINAL["drive_rule"], SYN_VARIANT[scoring])
     auc = roc_auc_score(rows.truth, rows.score)
-    return rows, key, {"per minute": dict(AUROC=auc, **S.metrics(rows.truth.to_numpy(), rows.flagged.to_numpy())),
-                       "per drive": dict(AUROC=auc, **S.metrics((key.truth == "FAULT").to_numpy(), (key.model_says == "FAULT").to_numpy()))}
+    m, d = S.scores(rows, key)                           # judged minutes / drives only ("too short" drives excluded)
+    return rows, key, {"per minute": dict(AUROC=auc, **m), "per drive": dict(AUROC=auc, **d)}
 
 def main_scores(B, R, scoring):
     auc = R[(R.method == FINAL["method"]) & (R.scoring == scoring) & (R.cutoff == FINAL["cutoff"]) & (R.drive_rule == FINAL["drive_rule"])].AUROC.mean()

@@ -21,9 +21,10 @@ Compared against: the pretrained model without fine-tuning, and a per-car linear
 
 Final settings (see model_build_guide.md, Step 7)
   - minute score = worst sensor's prediction error (averaged over 2 minutes) or the stuck-sensor check, whichever is larger
-  - alarm line = 95th percentile of the car's calibration scores ("Medium")
+  - alarm line = 90th percentile of the car's calibration scores ("Relaxed")
   - no alarms in the first 5 minutes of a drive (warm-up)
-  - a drive is FAULT if more than 30% of its minutes are flagged
+  - a drive is FAULT if more than 30% of its minutes are flagged; drives with under 1 minute after the warm-up are
+    "too short to judge" (reported separately, not counted as caught or missed)
   - no physics inputs (tested with --physics; not kept)
 
 Usage (from the Results folder):
@@ -33,7 +34,7 @@ Usage (from the Results folder):
 Output is binary: every minute (and every drive) is HEALTHY or FAULT; for a FAULT it also names the likely sensor.
 Writes obd_results_faults.csv, obd_results_summary.csv, obd_results_binary.csv and obd_pretrained.pt next to this script.
 """
-import argparse, os, time
+import argparse, glob, os, time
 import numpy as np, pandas as pd, torch, torch.nn as nn
 from sklearn.metrics import roc_auc_score
 
@@ -51,6 +52,12 @@ SRC = {"RPM": "ENGINE_RPM", "SPEED": "SPEED", "LOAD": "ENGINE_LOAD", "THROTTLE":
 RANGE = {"RPM": (0, 8000), "SPEED": (0, 250), "LOAD": (0, 100), "THROTTLE": (0, 100), "ECT": (-40, 140),
          "IAT": (-40, 90), "MAP": (10, 255), "MAF": (0, 400), "STFT1": (-50, 50)}   # outside = logging glitch
 DT, W = 5, 12            # resample every car to one row per 5 s; a window is 12 rows = 1 minute
+MIN_CH = 4               # a window needs at least this many sensors present
+
+def add_ltft():
+    """Experiment (--ved): long-term fuel trim (bank 1) as a 10th sensor. VED logs it; the Kaggle cars don't (masked)."""
+    if "LTFT1" not in CH:
+        CH.append("LTFT1"); SRC["LTFT1"] = "LONG TERM FUEL TRIM BANK 1"; RANGE["LTFT1"] = (-50, 50)
 
 # Physics inputs: simple engine relationships handed to the network ready-made. They are inputs only (never
 # predicted); one is hidden whenever a sensor it is built from is hidden, so it can't give away the answer.
@@ -109,6 +116,44 @@ def load_kaggle(folder):
                 if tr is not None: trips.append(dict(unit=unit, order=float(tg.row.iloc[0]) if unit_of else float(tg.t.iloc[0]), **tr))
     return trips
 
+VED_COLS = {"RPM": "Engine RPM[RPM]", "SPEED": "Vehicle Speed[km/h]", "MAF": "MAF[g/sec]",
+            "STFT1": "Short Term Fuel Trim Bank 1[%]", "LTFT1": "Long Term Fuel Trim Bank 1[%]"}
+# VED's "Absolute Load" is a different quantity from Kaggle's calculated load (goes up to ~180%), so it is not used.
+
+def load_ved(folder, n_pre, n_test, rows_pre=2000, rows_test=6000, seed=0):
+    """Vehicle Energy Dataset (gasoline cars only). Returns trips like load_kaggle.
+    n_pre cars (up to rows_pre 5-s rows each) are added to pretraining; n_test other cars (up to rows_test rows each)
+    are held-out test cars that are never used for pretraining ("test_only")."""
+    static = pd.read_excel(os.path.join(folder, "VED_Static_Data_ICE&HEV.xlsx"))
+    ice = set(static.loc[static["Vehicle Type"] == "ICE", "VehId"])
+    files = sorted(glob.glob(os.path.join(folder, "dynamic", "*.csv")))
+    use = ["VehId", "Trip", "Timestamp(ms)"] + [VED_COLS[c] for c in VED_COLS if c in CH]
+    parts = []
+    for f in files:
+        d = pd.read_csv(f, usecols=use, low_memory=False); parts.append(d[d.VehId.isin(ice)])
+    df = pd.concat(parts, ignore_index=True)
+    # cars with airflow and fuel trims (the signals VED adds), ranked by amount of driving
+    ok = df.groupby("VehId").agg(n=("Trip", "size"), maf=(VED_COLS["MAF"], lambda s: s.notna().mean()),
+                                 trim=(VED_COLS["STFT1"], lambda s: s.notna().mean()))
+    ok = ok[(ok.maf > .8) & (ok.trim > .8) & (ok.n > 20000)].index.to_numpy()
+    rng = np.random.RandomState(seed); rng.shuffle(ok)
+    test_ids, pre_ids = set(ok[:n_test]), set(ok[n_test:n_test + n_pre])
+    trips = []
+    for vid, g in df[df.VehId.isin(test_ids | pre_ids)].groupby("VehId"):
+        test = vid in test_ids; cap, total = (rows_test if test else rows_pre), 0
+        for trip, tg in g.sort_values(["Trip", "Timestamp(ms)"]).groupby("Trip"):
+            t = tg["Timestamp(ms)"].to_numpy(float) / 1000
+            d = pd.DataFrame({"t": t - t[0], "runtime": t - t[0], "code": 0.0, "row": np.arange(len(tg))})
+            for c in CH:
+                v = pd.to_numeric(tg[VED_COLS[c]], errors="coerce").to_numpy() if c in VED_COLS else np.full(len(tg), np.nan)
+                lo, hi = RANGE[c]; d[c] = np.where((v >= lo) & (v <= hi), v, np.nan)
+            tr = resample(d)
+            if tr is None: continue
+            trips.append(dict(unit=f"ved{vid}", order=float(trip), test_only=test, **tr)); total += len(tr["X"])
+            if total >= cap: break
+    print(f"VED: {len(pre_ids)} pretraining cars, {len(test_ids)} held-out test cars, {len(trips)} drives")
+    return trips
+
 def resample(g):
     """Put one trip on a 5 s grid. A value is kept only if a real reading is within 12 s of the grid point."""
     g = g.dropna(subset=["t"]); t = g.t.to_numpy(float)
@@ -137,7 +182,7 @@ def windows(trips, mu, sd, stride):
         Xn = (full(tr["X"]) - mu) / sd
         for a in range(0, len(Xn) - W + 1, stride):
             x = Xn[a:a + W]; m = ~np.isnan(x).any(0)
-            if m[:len(CH)].sum() < 4: continue
+            if m[:len(CH)].sum() < MIN_CH: continue
             xs.append(np.nan_to_num(x) * m); ms.append(m); cs.append(np.minimum(tr["ctx"][a:a + W], 30) / 30)
             codes.append(tr["code"][a:a + W].any()); tid.append(k); st.append(a)
     if not xs: return None
@@ -308,6 +353,7 @@ def maf_reacts(f):
     def apply(X):
         X = X.copy(); X[:, _j("MAF")] *= f; X[:, _j("LOAD")] *= f                      # load is computed from MAF
         X[:, _j("STFT1")] += TRIM_SHARE * (1 / f - 1) * 100                               # too little fuel -> lean -> trim up
+        if "LTFT1" in CH: X[:, _j("LTFT1")] += (1 - TRIM_SHARE) * (1 / f - 1) * 100       # the rest shows in the long-term trim
         return X
     return apply
 
@@ -316,6 +362,7 @@ def map_reacts(k):
         X = X.copy(); mp = X[:, _j("MAP")].copy(); X[:, _j("MAP")] = mp + k
         if np.isnan(X[:, _j("MAF")]).all(): X[:, _j("LOAD")] *= (mp + k) / np.maximum(mp, 10)   # no MAF: load from MAP
         X[:, _j("STFT1")] -= TRIM_SHARE * k / np.maximum(mp, 10) * 100                    # too much fuel -> rich -> trim down
+        if "LTFT1" in CH: X[:, _j("LTFT1")] -= (1 - TRIM_SHARE) * k / np.maximum(mp, 10) * 100
         return X
     return apply
 
@@ -342,7 +389,7 @@ def auroc(y, s):
 def prepare_car(unit, trips, a):
     """Steps 1-3 for one held-out car: pretrain on the other healthy cars, fine-tune on this car's first 40% of
     drive time, keep the next 20% for calibration and the last 40% as untouched test drives."""
-    pre = [t for t in trips if t["unit"] != unit and t["unit"] not in FAULTY_CARS]
+    pre = [t for t in trips if t["unit"] != unit and t["unit"] not in FAULTY_CARS and not t.get("test_only")]
     allX = np.concatenate([full(t["X"]) for t in pre]); mu, sd = np.nanmean(allX, 0), np.nanstd(allX, 0) + 1e-6
     mine = sorted([t for t in trips if t["unit"] == unit and windows([t], mu, sd, stride=2) is not None],
                   key=lambda t: t["order"])                          # skip drives with no engine data (GPS-only logs)
@@ -364,6 +411,7 @@ def prepare_car(unit, trips, a):
     tuned = VirtualSensorNet(); tuned.load_state_dict(base.state_dict())
     tuned = fit(tuned, Dft, np.arange(k), np.arange(k, len(Dft["x"])), a.ft_epochs, 3e-4)
     return dict(base=base, tuned=tuned, mu=mu, sd=sd, Dtr=Dtr, Dcal=Dcal, Dclean=Dclean, test_trips=test_trips, cal_trips=cal_trips)
+
 
 def evaluate_car(unit, trips, a):
     P = prepare_car(unit, trips, a)
@@ -390,29 +438,36 @@ def evaluate_car(unit, trips, a):
             s_clean, _ = score(Es[1], Dclean, test_trips)
             real = auroc(Dclean["code"].astype(int), s_clean) if Dclean["code"].any() else np.nan
             scored = [(f, Df, *score(E, Df, fault_trips[f]), minute(Df) >= a.grace) for (f, Df), E in zip(fault_sets.items(), Es[2:])]
+            # Only judged data is scored: minutes after the warm-up, and drives with at least a.min_judge windows
+            # (1 minute) after the warm-up. Shorter drives are "too short to judge" and counted separately.
+            warm_c, trip_c = warm_clean[clean_ok], Dclean["trip"][clean_ok]
+            judged_c = pd.Series(warm_c).groupby(trip_c).sum() >= a.min_judge
             for q in a.cutoffs:                               # every cutoff comes from calibration drives only
                 thr = np.quantile(s_cal[warm_cal], q)
-                fc = ((s_clean > thr) & warm_clean)[clean_ok]                # FAULT calls on clean minutes
-                fa = fc.mean()
+                fc = (s_clean[clean_ok] > thr) & warm_c                        # FAULT calls on clean minutes
+                fa = fc[warm_c].mean()
                 summ.append(dict(car=unit, method=name, scoring=scoring, cutoff=q, grace_min=a.grace,
                                  sensors=",".join(c for c, h in zip(CH, has) if h),
-                                 test_windows=int(clean_ok.sum()), false_alarm_rate=fa,
+                                 test_windows=int(warm_c.sum()), false_alarm_rate=fa,
+                                 clean_drives_judged=int(judged_c.sum()), clean_drives_too_short=int((~judged_c).sum()),
                                  real_code_windows=int(Dclean["code"].sum()), real_code_AUROC=real))
-                clean_trip_hit = pd.Series(fc).groupby(Dclean["trip"][clean_ok]).mean()
+                clean_trip_hit = pd.Series(fc).groupby(trip_c).mean()[judged_c]
                 for f, Df, s_f, who, warm_f in scored:
                     ch = CH.index(ALL_FAULTS[f][0]); ff = (s_f > thr) & warm_f          # FAULT calls on faulty minutes
                     y = np.r_[np.zeros(clean_ok.sum()), np.ones(len(s_f))]
-                    trip_hit = pd.Series(ff).groupby(Df["trip"]).mean()   # share of each drive's minutes flagged
+                    judged_f = pd.Series(warm_f).groupby(Df["trip"]).sum() >= a.min_judge
+                    trip_hit = pd.Series(ff).groupby(Df["trip"]).mean()[judged_f]   # share of each drive's minutes flagged
                     for rule in a.drive_rules:        # a whole drive is FAULT if more than `rule` of its minutes are flagged
                         rows.append(dict(car=unit, method=name, scoring=scoring, cutoff=q, grace_min=a.grace, drive_rule=rule,
                                          fault=f, sensor=ALL_FAULTS[f][0], AUROC=auroc(y, np.r_[s_clean[clean_ok], s_f]),
-                                         window_detection=ff.mean(), drive_detection=(trip_hit > rule).mean(),
+                                         window_detection=ff[warm_f].mean(), drive_detection=(trip_hit > rule).mean(),
                                          blamed_right_sensor=(who[ff] == ch).mean() if ff.any() else np.nan,
                                          false_alarm_rate=fa,
-                                         # binary HEALTHY/FAULT counts: same drives, clean copy vs faulty copy (1:1)
-                                         TP=int(ff.sum()), FN=int((~ff).sum()), FP=int(fc.sum()), TN=int((~fc).sum()),
+                                         # binary HEALTHY/FAULT counts on judged data: same drives, clean copy vs faulty copy (1:1)
+                                         TP=int(ff.sum()), FN=int((~ff & warm_f).sum()), FP=int(fc.sum()), TN=int((~fc & warm_c).sum()),
                                          drive_TP=int((trip_hit > rule).sum()), drive_FN=int((trip_hit <= rule).sum()),
-                                         drive_FP=int((clean_trip_hit > rule).sum()), drive_TN=int((clean_trip_hit <= rule).sum())))
+                                         drive_FP=int((clean_trip_hit > rule).sum()), drive_TN=int((clean_trip_hit <= rule).sum()),
+                                         drives_too_short=int((~judged_f).sum())))
     return pd.DataFrame(rows), pd.DataFrame(summ)
 
 TAG = ""   # added to output file names (set by --tag, e.g. "_physics")
@@ -449,9 +504,10 @@ def main():
     ap.add_argument("--cars", nargs="*", help="which cars to hold out (default: every healthy car with enough data)")
     ap.add_argument("--epochs", type=int, default=40); ap.add_argument("--ft-epochs", type=int, default=20)
     ap.add_argument("--smooth", type=int, default=12, help="average scores over this many windows (12 x 10 s = 2 min)")
-    ap.add_argument("--cutoffs", type=float, nargs="*", default=[0.95, 0.99, 0.975, 0.90, 0.80],
+    ap.add_argument("--cutoffs", type=float, nargs="*", default=[0.90, 0.95, 0.99, 0.975, 0.80],
                     help="alarm cutoffs = percentiles of each car's calibration scores; the first one is the chosen "
-                         "operating point (0.95 = 'Medium': precision ~0.85, ~8%% false alarms in testing)")
+                         "operating point (0.90 = 'Relaxed')")
+    ap.add_argument("--min-judge", type=int, default=6, help="drives need this many windows (6 = 1 minute) after the warm-up to be judged")
     ap.add_argument("--drive-rules", type=float, nargs="*", default=[0.3, 0.2, 0.4, 0.5],
                     help="a whole drive is FAULT if more than this share of its minutes is flagged; "
                          "the first one is the chosen rule (0.3 = more than 30%% of minutes)")
@@ -463,16 +519,24 @@ def main():
     ap.add_argument("--tag", default="", help="added to output file names, e.g. _physics")
     ap.add_argument("--skip-final", action="store_true", help="don't retrain/save obd_pretrained.pt")
     ap.add_argument("--final-only", action="store_true", help="skip the evaluation; only train and save obd_pretrained.pt")
+    ap.add_argument("--ved", help="experiment: folder with the Vehicle Energy Dataset (VED_Static_Data_*.xlsx + dynamic/*.csv)")
+    ap.add_argument("--ved-pretrain", type=int, default=60, help="VED gasoline cars added to pretraining")
+    ap.add_argument("--ved-test", type=int, default=4, help="VED cars held out as extra test cars (never pretrained on)")
+    ap.add_argument("--ltft", action="store_true", help="experiment: add long-term fuel trim (bank 1) as a 10th sensor")
     ap.add_argument("--quick", action="store_true")
     a = ap.parse_args()
     if a.quick: a.epochs, a.ft_epochs = 3, 2
     if not a.physics: PHYSICS.clear()                    # final model: no physics inputs
+    if a.ltft: add_ltft()
     global TAG; TAG = a.tag
     t0 = time.time(); trips = load_kaggle(a.data)
     size = pd.Series({u: sum(len(t["X"]) for t in trips if t["unit"] == u) for u in {t["unit"] for t in trips}})
     print(f"{len(trips)} drives, {len(size)} cars; 5-s rows per car:\n{size.sort_values(ascending=False).to_string()}")
     cars = a.cars or [u for u in size.index if size[u] >= 1500 and u not in FAULTY_CARS]
-    if a.quick and not a.cars: cars = cars[:1]
+    if a.ved:
+        ved = load_ved(a.ved, a.ved_pretrain, a.ved_test); trips += ved
+        if not a.cars: cars += sorted({t["unit"] for t in ved if t["test_only"]})
+    if a.quick and not a.cars: cars = cars[:1] + [c for c in cars if c.startswith("ved")][:1]
     if a.final_only: return save_final(trips, a, t0)
     all_rows, all_summ = [], []
     for u in sorted(cars):
@@ -496,12 +560,12 @@ def main():
 
 def save_final(trips, a, t0):
     """Final model for your own cars: pretrain on every healthy car and save it with its settings."""
-    pre = [t for t in trips if t["unit"] not in FAULTY_CARS]
+    pre = [t for t in trips if t["unit"] not in FAULTY_CARS and not t.get("test_only")]
     allX = np.concatenate([full(t["X"]) for t in pre]); mu, sd = np.nanmean(allX, 0), np.nanstd(allX, 0) + 1e-6
     D = windows(pre, mu, sd, stride=2); n = len(D["x"]); perm = np.random.RandomState(0).permutation(n)
     final = fit(VirtualSensorNet(), D, perm[: int(.9 * n)], perm[int(.9 * n):], a.epochs, 1e-3)
     torch.save(dict(state_dict=final.state_dict(), channels=CH, physics=[p[0] for p in PHYSICS], mu=mu, sd=sd, dt_seconds=DT, window=W,
-                    settings=dict(scoring=FINAL_SCORING, cutoff=0.95, grace_min=a.grace, drive_rule=0.3, smooth=a.smooth, min_flat=a.min_flat)),
+                    settings=dict(scoring=FINAL_SCORING, cutoff=a.cutoffs[0], min_judge_windows=a.min_judge, grace_min=a.grace, drive_rule=0.3, smooth=a.smooth, min_flat=a.min_flat)),
                os.path.join(HERE, "obd_pretrained.pt"))
     print(f"\nsaved obd_pretrained.pt   ({time.time() - t0:.0f}s total)")
 

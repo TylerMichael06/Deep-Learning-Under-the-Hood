@@ -135,15 +135,17 @@ The final general model (`obd_pretrained.pt`) is pretrained once on **all** heal
 
 | Setting | Final choice | Why |
 |---|---|---|
-| Alarm cutoff | **Medium**: 95th percentile of the car's calibration scores | best balance of catches vs. false alarms |
+| Alarm cutoff | **Relaxed**: 90th percentile of the car's calibration scores | catches more faulty drives (61% -> 67% of judged drives) for a small rise in false alarms (6% -> 9%); the Medium line (95th percentile) was used before |
 | Cutoff type | **one shared cutoff** for all sensors | per-sensor cutoffs did not help overall and were worse on real codes |
 | Scoring | **2-minute score + stuck-sensor check** | best on both tests (see Step 10) |
 | Warm-up grace | **5 minutes**: no alarms in the first 5 min of a drive, and those minutes are not used to set the cutoff | cold starts caused many false alarms |
 | Drive rule | a drive is **FAULT if more than 30% of its minutes** are flagged | compared 20/30/40/50% (main test, before the warm-up rule): faulty drives caught 57/50/47/44%, clean drives flagged 27/18/17/15%. 30% gives the biggest drop in false alarms for the smallest loss in catches |
 | Physics inputs | **not used** | tested; small gain on air faults but more false alarms (see Step 10) |
+| Too short to judge | drives with **less than 1 minute after the warm-up** (~6 min in total) get the verdict **TOO SHORT** | the model never gets to look at them; before, they were called HEALTHY and counted as misses. Reported separately (about 1 in 4 test drives) |
 
-- **Minute:** FAULT if its score is above the cutoff (and it is past the warm-up).
-- **Drive:** FAULT if more than 30% of its minutes are FAULT.
+- **Minute:** FAULT if its score is above the cutoff (warm-up minutes are not judged).
+- **Drive:** TOO SHORT if it has under 1 minute after the warm-up; otherwise FAULT if more than 30% of its minutes are FAULT.
+- All scores below are on **judged** minutes and drives; too-short drives are counted separately.
 
 Both tests below use exactly these settings.
 
@@ -173,28 +175,31 @@ Both tests below use exactly these settings.
 
 | Level | Accuracy | Precision | Recall | F1 | False alarms |
 |---|---|---|---|---|---|
-| Per minute | 0.72 | 0.91 | 0.49 | 0.63 | 5% |
-| Per drive (>30% rule) | 0.70 | 0.91 | 0.44 | 0.59 | 4% |
+| Per minute | 0.79 | 0.85 | 0.69 | 0.76 | 12% |
+| **Per drive (>30% rule)** | **0.79** | **0.88** | **0.67** | **0.76** | **9%** |
+
+Too short to judge: 212 of 796 faulty drive copies (27%) and 25 of 99 clean test drives (25%).
+For comparison, the same model with the old settings (Medium line, short drives counted as misses) caught 44% of all faulty drives.
 
 **By fault (AUROC / faulty drives caught / right sensor named):**
 
 | Fault | AUROC | Drives caught | Right sensor |
 |---|---|---|---|
-| Fuel trim +10% (vacuum leak) | 0.97 | 75% | 98% |
-| Coolant sensor stuck | 0.96 | 78% | 99% |
-| MAF -25%, engine reacts (realistic) | 0.90 | 45% | 2%* |
-| MAP +10 kPa, engine reacts (realistic) | 0.85 | 56% | 0%* |
-| Intake air temp +15 °C | 0.84 | 53% | 79% |
-| Throttle signal noisy | 0.83 | 44% | 49% |
-| MAF -25% (sensor only) | 0.78 | 38% | 64% |
-| Coolant warms at half speed (thermostat) | 0.68 | 36% | 71% |
-| MAF drifts to -30% | 0.61 | 9% | 37% |
-| MAP +10 kPa (sensor only) | 0.58 | 5% | 11% |
+| Fuel trim +10% (vacuum leak) | 0.97 | 98% | 97% |
+| Coolant sensor stuck | 0.96 | 95% | 99% |
+| Intake air temp +15 °C | 0.85 | 79% | 82% |
+| MAF -25%, engine reacts (realistic) | 0.91 | 72% | 9%* |
+| MAP +10 kPa, engine reacts (realistic) | 0.85 | 67% | 2%* |
+| Throttle signal noisy | 0.83 | 64% | 49% |
+| MAF -25% (sensor only) | 0.78 | 58% | 57% |
+| Coolant warms at half speed (thermostat) | 0.68 | 42% | 72% |
+| MAF drifts to -30% | 0.61 | 36% | 31% |
+| MAP +10 kPa (sensor only) | 0.58 | 12% | 17% |
 
 \* For the realistic air faults the model blames the **fuel trim**, which is where the fault really shows up;
 a mechanic would read it the same way (a lean/rich trim points to the air sensor), but it counts as "wrong sensor" here.
 
-**Real trouble codes (car13):** AUROC 0.66 (other methods 0.54-0.56).
+**Real trouble codes (car13):** AUROC 0.66 (other methods 0.54-0.57).
 
 ---
 
@@ -214,23 +219,25 @@ a mechanic would read it the same way (a lean/rich trim points to the air sensor
 | Throttle signal noisy (±5%) | THROTTLE | minute 0 |
 | Intake air temp drifts up to +20 °C | IAT | minute 0 |
 
-- **67 drives** (40 faulty, 27 clean). Minute-level AUROC **0.75**.
+- **67 drives** (40 faulty, 27 clean); **18 too short to judge** (6 faulty, 12 clean), so 49 judged (34 faulty, 15 clean). Minute-level AUROC **0.75**.
 
 **Final results (final settings):**
 
 | Level | Accuracy | Precision | Recall | F1 | False alarms |
 |---|---|---|---|---|---|
-| Per minute | 0.54 | 0.95 | 0.38 | 0.55 | 5% |
-| **Per drive** | **0.70** | **0.92** | **0.55** | **0.69** | **7%** |
+| Per minute | 0.66 | 0.93 | 0.60 | 0.73 | 15% |
+| **Per drive** | **0.76** | **0.89** | **0.74** | **0.81** | **20%*** |
+
+\* 3 of only 15 judged clean drives, so this percentage is unstable.
 
 **Run-to-run variation:** training on the CPU is not perfectly repeatable, so re-running the same test gives
 slightly different numbers (about ±0.03; e.g. an earlier run of the same settings gave per-drive F1 0.73).
 
 Effect of the warm-up grace (per drive, earlier run): no grace → F1 0.64, 29% false alarms; 3 min → F1 0.72, 12%; **5 min → F1 0.71, 9%**.
 
-**By fault (drives labelled correctly):** coolant stuck 3/3 (alarm ~3 min after it freezes) · vacuum leak 4/6 ·
-MAP +8 kPa with engine reacting 2/3 · MAF 15% low with engine reacting 1/2 · throttle noisy 5/8 · intake temp drift 6/11 ·
-MAF 15% low (sensor only) 1/5 · MAP +8 kPa (sensor only) 0/2 · clean drives 25/27.
+**By fault (judged drives labelled correctly):** coolant stuck 3/3 (alarm ~2 min after it freezes) · vacuum leak 5/5 ·
+MAF 15% low with engine reacting 2/2 · MAP +8 kPa with engine reacting 2/3 · throttle noisy 5/6 · intake temp drift 7/8 ·
+MAF 15% low (sensor only) 1/5 · MAP +8 kPa (sensor only) 0/2 · clean drives 12/15.
 
 **What it still misses:**
 - very short drives (almost all warm-up) are too short to judge

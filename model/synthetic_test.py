@@ -114,19 +114,29 @@ VARIANTS = {"current (2-min score)": "", "two-speed (2 + 10 min)": "two", "two-s
             "stuck check (no two-speed)": "only"}
 FINAL_VARIANT = "only"      # final model: 2-minute score + stuck-sensor check
 
-def decide(rows, key, g, rule, variant=""):
-    """Apply the alarm with a g-minute warm-up grace period; fill in the model's verdict for every drive."""
+def decide(rows, key, g, rule, variant="", min_judge=6):
+    """Apply the alarm with a g-minute warm-up grace period; fill in the model's verdict for every drive.
+    Minutes in the warm-up are not judged; drives with fewer than min_judge windows (1 minute) after the warm-up
+    are "TOO SHORT" to judge. Both are reported separately, not counted as caught or missed."""
     sfx = f"_{variant}" if variant else ""
     rows = rows.assign(score=rows["score" + sfx], blamed=rows["blamed" + sfx], threshold=rows[f"thr{sfx}_{g}"])
-    rows["flagged"] = (rows.score > rows.threshold) & (rows.minute >= g)
+    rows["judged"] = rows.minute >= g
+    rows["flagged"] = (rows.score > rows.threshold) & rows.judged
     key = key.copy(); ids = list(zip(key.car, key.drive))
-    share = rows.groupby(["car", "drive"]).flagged.mean()
-    key["model_says"] = ["FAULT" if share.get(i, 0) > rule else "HEALTHY" for i in ids]
+    share = rows.groupby(["car", "drive"]).flagged.mean(); n_judged = rows.groupby(["car", "drive"]).judged.sum()
+    key["judged"] = [n_judged.get(i, 0) >= min_judge for i in ids]
+    key["model_says"] = ["TOO SHORT" if not j else "FAULT" if share.get(i, 0) > rule else "HEALTHY" for i, j in zip(ids, key.judged)]
     hit = rows[rows.flagged & rows.truth].groupby(["car", "drive"])
     blamed, first = hit.blamed.agg(lambda b: b.value_counts().index[0]), hit.minute.min()   # first correct alarm
     key["model_blames"] = [blamed.get(i, "") for i in ids]
     key["minutes_to_alarm"] = [first.get(i, np.nan) for i in ids] - key.start_min.fillna(0)
     return rows, key
+
+def scores(r, k):
+    """Binary scores on judged data only: minutes after the warm-up, and drives long enough to judge."""
+    r, k = r[r.judged], k[k.judged]
+    return (metrics(r.truth.to_numpy(), r.flagged.to_numpy()),
+            dict(metrics((k.truth == "FAULT").to_numpy(), (k.model_says == "FAULT").to_numpy()), too_short=0))
 
 def metrics(truth, pred):
     tp, fn = int((pred & truth).sum()), int((~pred & truth).sum()); fp, tn = int((pred & ~truth).sum()), int((~pred & ~truth).sum())
@@ -163,7 +173,7 @@ def main():
     ap.add_argument("--data", required=True, help="folder with the three Kaggle exp*.csv files")
     ap.add_argument("--cars", nargs="*", default=["car11", "car9", "car8", "exp2_car"], help="held-out test cars")
     ap.add_argument("--clean-share", type=float, default=0.3, help="share of test drives left without a fault")
-    ap.add_argument("--cutoff", type=float, default=0.95); ap.add_argument("--drive-rule", type=float, default=0.3)
+    ap.add_argument("--cutoff", type=float, default=0.90); ap.add_argument("--drive-rule", type=float, default=0.3)
     ap.add_argument("--epochs", type=int, default=40); ap.add_argument("--ft-epochs", type=int, default=20)
     ap.add_argument("--smooth", type=int, default=12); ap.add_argument("--quick", action="store_true")
     ap.add_argument("--graces", type=int, nargs="*", default=[5, 0, 3],
@@ -184,29 +194,30 @@ def main():
     table = []
     for g in sorted(a.graces):
         r, k = decide(rows0, key0, g, a.drive_rule, FINAL_VARIANT)
-        table += [dict(grace_min=g, level="minute", **metrics(r.truth.to_numpy(), r.flagged.to_numpy())),
-                  dict(grace_min=g, level=f"drive (>{a.drive_rule:.0%})", **metrics((k.truth == "FAULT").to_numpy(), (k.model_says == "FAULT").to_numpy()))]
+        m, d = scores(r, k); d["too_short"] = int((~k.judged).sum())
+        table += [dict(grace_min=g, level="minute", **m), dict(grace_min=g, level=f"drive (>{a.drive_rule:.0%})", **d)]
     res = pd.DataFrame(table); print(res.round(3).to_string(index=False))
     # --- the slow-fault fixes, side by side at the chosen warm-up
     g0, comp, byfault = a.graces[0], [], []
     for vname, v in VARIANTS.items():
         r, k = decide(rows0, key0, g0, a.drive_rule, v)
-        comp += [dict(variant=vname, level="minute", AUROC=roc_auc_score(r.truth, r.score), **metrics(r.truth.to_numpy(), r.flagged.to_numpy())),
-                 dict(variant=vname, level=f"drive (>{a.drive_rule:.0%})", AUROC=np.nan,
-                      **metrics((k.truth == "FAULT").to_numpy(), (k.model_says == "FAULT").to_numpy()))]
-        byfault.append(k.groupby("fault").apply(lambda g: (g.model_says == g.truth).sum()).rename(vname))
+        m, d = scores(r, k)
+        comp += [dict(variant=vname, level="minute", AUROC=roc_auc_score(r.truth, r.score), **m),
+                 dict(variant=vname, level=f"drive (>{a.drive_rule:.0%})", AUROC=np.nan, **d)]
+        byfault.append(k[k.judged].groupby("fault").apply(lambda g: (g.model_says == g.truth).sum()).rename(vname))
     comp = pd.DataFrame(comp)
     print(f"\n=== slow-fault fixes compared ({g0}-min warm-up) ===\n", comp.round(3).to_string(index=False))
     print("\n=== drives labelled correctly, by fault ===\n", pd.concat(byfault, axis=1).assign(
-        drives=key0.groupby("fault").size()).to_string())
+        judged_drives=k[k.judged].groupby("fault").size()).to_string())
     rows, key = decide(rows0, key0, a.graces[0], a.drive_rule, FINAL_VARIANT)
     print(f"\n(files and the table below use the final model: stuck check, {a.graces[0]}-minute warm-up)")
-    per = key.groupby("fault").apply(lambda g: pd.Series(dict(
+    per = key[key.judged].groupby("fault").apply(lambda g: pd.Series(dict(
         drives=len(g), labelled_correctly=(g.model_says == g.truth).mean(),
         right_sensor=(g.model_blames == g.sensor)[g.model_says == "FAULT"].mean() if g.sensor.iloc[0] else np.nan,
         median_minutes_to_alarm=g.minutes_to_alarm.median())))
     print("\n=== by scenario ===\n", per.round(2).to_string())
     res.assign(minute_AUROC=auc).to_csv(os.path.join(M.RESULTS, f"synthetic_results{a.tag}.csv"), index=False)
+    print(f"too short to judge: {int((~key.judged).sum())} of {len(key)} drives")
     key[["car", "drive", "fault", "sensor", "start_min", "truth", "model_says", "model_blames", "minutes_to_alarm"]].to_csv(
         os.path.join(M.RESULTS, f"synthetic_answer_key{a.tag}.csv"), index=False)
     rows.to_csv(os.path.join(M.RESULTS, f"synthetic_minutes{a.tag}.csv"), index=False)       # every scored minute, for make_figures.py
