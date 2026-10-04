@@ -54,11 +54,15 @@ RANGE = {"RPM": (0, 8000), "SPEED": (0, 250), "LOAD": (0, 100), "THROTTLE": (0, 
 DT, W = 5, 12            # resample every car to one row per 5 s; a window is 12 rows = 1 minute
 MIN_CH = 4               # a window needs at least this many sensors present
 
+# ---- EXPERIMENT (off in the final model; only runs with --ltft) -------------------------------------------
 def add_ltft():
-    """Experiment (--ved): long-term fuel trim (bank 1) as a 10th sensor. VED logs it; the Kaggle cars don't (masked)."""
+    """EXPERIMENT (--ltft, used with --ved): long-term fuel trim (bank 1) as a 10th sensor. VED logs it; the Kaggle cars don't (masked)."""
     if "LTFT1" not in CH:
         CH.append("LTFT1"); SRC["LTFT1"] = "LONG TERM FUEL TRIM BANK 1"; RANGE["LTFT1"] = (-50, 50)
 
+# ---- EXPERIMENT (off in the final model; only used with --physics) -----------------------------------------
+# Tested: slightly better on air faults but more false alarms, so main() empties PHYSICS unless --physics is given.
+# With PHYSICS empty, full() returns the 9 sensors unchanged and visible() returns the sensor visibility unchanged.
 # Physics inputs: simple engine relationships handed to the network ready-made. They are inputs only (never
 # predicted); one is hidden whenever a sensor it is built from is hidden, so it can't give away the answer.
 PHYSICS = [("AIR_PER_REV",  ("MAF", "RPM"),  lambda d: d["MAF"] / np.maximum(d["RPM"], 300) * 1000),  # air per engine turn ~ load
@@ -66,13 +70,14 @@ PHYSICS = [("AIR_PER_REV",  ("MAF", "RPM"),  lambda d: d["MAF"] / np.maximum(d["
            ("LOAD_X_RPM",   ("LOAD", "RPM"), lambda d: d["LOAD"] * d["RPM"] / 1000)]                  # engine air demand ~ MAF
 
 def full(X):
-    """Raw sensors (T, C) -> sensors + physics inputs (T, C + K)."""
+    """Raw sensors (T, C) -> sensors + physics inputs (T, C + K). Final model: no physics inputs, returns X unchanged."""
     d = {c: X[:, j] for j, c in enumerate(CH)}
     P = np.stack([f(d) for _, _, f in PHYSICS], 1) if PHYSICS else np.zeros((len(X), 0))
     return np.concatenate([X, P.astype(np.float32)], 1)
 
 def visible(vis_s, m):
-    """Sensor visibility (B, C) -> visibility of sensors + physics inputs (B, C + K)."""
+    """Sensor visibility (B, C) -> visibility of sensors + physics inputs (B, C + K). A physics input is hidden whenever a
+    sensor it is built from is hidden (no peeking). Final model: no physics inputs, returns vis_s unchanged."""
     if not PHYSICS: return vis_s
     dep = torch.tensor([[c in srcs for c in CH] for _, srcs, _ in PHYSICS], dtype=torch.float32)   # (K, C)
     blocked = ((1 - vis_s) @ dep.T).clamp(max=1)
@@ -116,6 +121,9 @@ def load_kaggle(folder):
                 if tr is not None: trips.append(dict(unit=unit, order=float(tg.row.iloc[0]) if unit_of else float(tg.t.iloc[0]), **tr))
     return trips
 
+# ---- EXPERIMENT (off in the final model; only runs with --ved) --------------------------------------------
+# Vehicle Energy Dataset: 60 extra cars tried for pretraining. It has only 4 of our 9 sensors and did not improve
+# the model, so the final model is trained on the Kaggle data only.
 VED_COLS = {"RPM": "Engine RPM[RPM]", "SPEED": "Vehicle Speed[km/h]", "MAF": "MAF[g/sec]",
             "STFT1": "Short Term Fuel Trim Bank 1[%]", "LTFT1": "Long Term Fuel Trim Bank 1[%]"}
 # VED's "Absolute Load" is a different quantity from Kaggle's calculated load (goes up to ~180%), so it is not used.
@@ -268,7 +276,7 @@ def ridge_errors(D_fit, D_list, lam=1.0):
     return outs
 
 # ====================== STEP 4: SCORE + CALIBRATE ==============================
-def calibrate(E_cal, trip_cal, smooth, per_sensor=False):
+def calibrate(E_cal, trip_cal, smooth, per_sensor=False):    # per_sensor=True: EXPERIMENT, not used in the final model
     """On this car's clean calibration data, learn each sensor's usual (log) error -> z-score per sensor.
     Faults persist, so z-scores are averaged over the last `smooth` windows of the same drive (causal).
     Window score = worst sensor. Returns the scoring function and the calibration scores; the alarm cutoff is a
@@ -309,7 +317,7 @@ def unit_scale(x_cal, x):
     med, top = np.median(x_cal), np.quantile(x_cal, .99)
     return (x - med) / max(top - med, 1e-6)
 
-def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True):
+def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True):   # final model: use_slow=False ("stuck check")
     """Fixes for slow faults. Score = the largest of
        (1) the usual 2-minute score, (2) a slow 10-minute score (catches creeping drift), and
        (3) a stuck check: minutes a slow sensor has been frozen ÷ the longest freeze seen on this car's calibration drives.
@@ -430,6 +438,7 @@ def evaluate_car(unit, trips, a):
     for name, errs in methods.items():
         Es = errs([Dcal, Dclean] + list(fault_sets.values()))
         clean_ok = ~Dclean["code"]
+        # "stuck check" is the final scoring; the other two are compared in the results (two-speed = EXPERIMENT, not kept)
         for scoring in ("shared cutoff", "stuck check", "two-speed + stuck check"):
             if scoring == "shared cutoff":
                 sc, s_cal = calibrate(Es[0], Dcal["trip"], a.smooth); score = lambda E, D_, trips_: sc(E, D_["trip"])
@@ -514,6 +523,7 @@ def main():
     ap.add_argument("--grace", type=float, default=5, help="warm-up grace period (minutes): no alarms at the start of a drive")
     ap.add_argument("--smooth-long", type=int, default=60, help="slow score: average over this many windows (60 x 10 s = 10 min)")
     ap.add_argument("--min-flat", type=float, default=5, help="stuck check: never flag a freeze shorter than this (minutes)")
+    # ---- EXPERIMENT options (all off by default; the final model uses none of them) ----
     ap.add_argument("--physics", action="store_true",
                     help="add the physics inputs (tested: slightly better on air faults, more false alarms; not used in the final model)")
     ap.add_argument("--tag", default="", help="added to output file names, e.g. _physics")
