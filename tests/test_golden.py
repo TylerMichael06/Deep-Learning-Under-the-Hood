@@ -6,9 +6,12 @@ import numpy as np, pandas as pd, torch
 from synthdata import EVAL_ARGS, SYN_ARGS, make_trips, write_kaggle_csvs
 
 # --- the code under test (the refactor changes only this block) ---
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "model"))
-import obd_model as M
-import synthetic_test as S
+from types import SimpleNamespace
+from obdfault import config, data, features, model, train, scoring, faults, evaluate
+from obdfault import synthetic as S
+# ponytail: one namespace with every module's names, so compute() calls stay exactly as they were before the split
+M = SimpleNamespace(**{k: v for mod in (config, data, features, model, train, scoring, faults, evaluate)
+                       for k, v in vars(mod).items() if not k.startswith("__")})
 # ------------------------------------------------------------------
 
 GOLDEN = os.path.join(os.path.dirname(__file__), "golden.pkl")

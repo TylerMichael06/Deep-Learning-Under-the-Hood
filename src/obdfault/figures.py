@@ -1,20 +1,21 @@
 """Report figures and the summary table for the final model. Reads the data and the result files in this folder.
 
-Usage (from the Results folder, after obd_model.py and synthetic_test.py have been run):
-  python make_figures.py --data "..\\Datasets\\OBD-II datasets"
-Writes PNGs and summary_table.csv into Results\\figures\\
+Usage (from the repo root, after obdfault.evaluate and obdfault.synthetic have been run):
+  python -m obdfault.figures
+Writes PNGs and summary_table.csv into figures/
 """
 import argparse, os
 import numpy as np, pandas as pd
 import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, roc_auc_score
-import obd_model as M
-import synthetic_test as S
+from .config import CH, FAULTY_CARS, FIGURES, KAGGLE_DATA, RESULTS
+from .data import load_kaggle
+from . import synthetic as S
 
-HERE = os.path.dirname(os.path.abspath(__file__)); OUT = M.FIGURES; RES = M.RESULTS
+OUT = FIGURES; RES = RESULTS
 BLUE, ORANGE, AQUA, INK, INK2, GRID, GREY = "#2a78d6", "#eb6834", "#1baf7a", "#0b0b0b", "#52514e", "#e4e3df", "#b4b2a9"
 NICE = {"RPM": "RPM", "SPEED": "Speed (km/h)", "LOAD": "Engine load (%)", "THROTTLE": "Throttle (%)",
-        "ECT": "Coolant temp (Â°C)", "IAT": "Intake air temp (Â°C)", "MAP": "Manifold pressure (kPa)",
+        "ECT": "Coolant temp (°C)", "IAT": "Intake air temp (°C)", "MAP": "Manifold pressure (kPa)",
         "MAF": "Mass air flow (g/s)", "STFT1": "Short-term fuel trim (%)"}
 FINAL = dict(method="fine-tuned (ours)", scoring="stuck check", cutoff=0.90, drive_rule=0.3, grace=5)
 SYN_VARIANT = {"shared cutoff": "", "stuck check": "only", "two-speed + stuck check": "stuck"}   # same scorings, as named in synthetic_test.py
@@ -40,7 +41,7 @@ def save(fig, name):
 PID = {"RPM": "0C", "SPEED": "0D", "LOAD": "04", "THROTTLE": "11", "ECT": "05", "IAT": "0F", "MAP": "0B", "MAF": "10", "STFT1": "06"}
 
 def healthy(trips):
-    return [t for t in trips if t["unit"] not in M.FAULTY_CARS]
+    return [t for t in trips if t["unit"] not in FAULTY_CARS]
 
 def table_features(trips):
     """Feature table: what each sensor is, its typical range on healthy cars, and how many cars report it."""
@@ -48,7 +49,7 @@ def table_features(trips):
     X = np.concatenate([t["X"] for t in H])
     has = {u: (~np.isnan(np.concatenate([t["X"] for t in H if t["unit"] == u]))).mean(0) > .5 for u in units}
     rows = []
-    for j, c in enumerate(M.CH):
+    for j, c in enumerate(CH):
         v = X[:, j][~np.isnan(X[:, j])]; lo, med, hi = np.percentile(v, [5, 50, 95])
         name, unit = (NICE[c].split(" (") + [""])[:2]
         rows.append([name, PID[c], unit.rstrip(")") or "rpm", f"{med:.0f}", f"{lo:.0f} to {hi:.0f}", f"{sum(has[u][j] for u in units)} of {len(units)}"])
@@ -67,10 +68,10 @@ def table_features(trips):
 def fig_relationships(trips):
     """What the model learns: on a healthy engine the sensors move together."""
     X = np.concatenate([t["X"] for t in healthy(trips)]); ctx = np.concatenate([t["ctx"] for t in healthy(trips)])
-    ix = {c: j for j, c in enumerate(M.CH)}
+    ix = {c: j for j, c in enumerate(CH)}
     panels = [(X[:, ix["RPM"]], X[:, ix["MAF"]], "RPM", "Mass air flow (g/s)", "More RPM -> more air in"),
               (X[:, ix["THROTTLE"]], X[:, ix["MAP"]], "Throttle (%)", "Manifold pressure (kPa)", "Open throttle -> higher pressure"),
-              (np.minimum(ctx, 40), X[:, ix["ECT"]], "Minutes since engine start", "Coolant temp (Â°C)", "Engine warms up, then levels off")]
+              (np.minimum(ctx, 40), X[:, ix["ECT"]], "Minutes since engine start", "Coolant temp (°C)", "Engine warms up, then levels off")]
     fig, axes = plt.subplots(1, 3, figsize=(12, 3.8))
     for ax, (x, y, xl, yl, title) in zip(axes, panels):
         ok = ~np.isnan(x) & ~np.isnan(y)
@@ -85,7 +86,7 @@ def fig_coverage_bars(trips):
     """How many cars report each sensor (simple version of the coverage heatmap)."""
     H = healthy(trips); units = sorted({t["unit"] for t in H})
     share = pd.Series({c: np.mean([(~np.isnan(np.concatenate([t["X"] for t in H if t["unit"] == u])[:, j])).mean() > .5 for u in units])
-                       for j, c in enumerate(M.CH)}).sort_values()
+                       for j, c in enumerate(CH)}).sort_values()
     fig, ax = plt.subplots(figsize=(7, 3.8)); y = np.arange(len(share))
     ax.barh(y, share * 100, color=BLUE, height=.6); ax.set_yticks(y, [NICE[c].split(" (")[0] for c in share.index]); ax.set_xlim(0, 105)
     for yi, (c, v) in zip(y, share.items()): ax.text(v * 100 + 1.5, yi, f"{round(v * len(units))} of {len(units)} cars", va="center", fontsize=8, color=INK)
@@ -211,10 +212,10 @@ def main_scores(B, R, scoring):
 
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("--data", required=True, help="folder with the three Kaggle exp*.csv files")
+    ap = argparse.ArgumentParser(); ap.add_argument("--data", default=KAGGLE_DATA, help="folder with the three Kaggle exp*.csv files (default: data/public/kaggle-obd2)")
     ap.add_argument("--scoring", default=FINAL["scoring"], choices=list(SYN_VARIANT), help="the final scoring to show")
     a = ap.parse_args(); os.makedirs(OUT, exist_ok=True); FINAL["scoring"] = a.scoring
-    trips = M.load_kaggle(a.data)
+    trips = load_kaggle(a.data)
     R, B = pd.read_csv(latest("obd_results_faults.csv")), pd.read_csv(latest("obd_results_binary.csv"))
     rows, key, syn = synthetic_scores("", a.scoring)
     for old in ("fig1_sensors_example_drive.png", "fig4_blamed_sensor.png"):   # replaced by clearer versions

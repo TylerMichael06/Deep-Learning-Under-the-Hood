@@ -1,5 +1,5 @@
 # Raw data: large (EngineAD zips are ~5 GB; GitHub rejects files over 100 MB) and downloadable from the source
-Datasets/
+data/public/
 *.zip
 EngineFaultDB_Final.csv
 
@@ -13,3 +13,8 @@ __pycache__/
 
 # Office lock files
 ~$*
+
+# Local environment
+.venv/
+*.egg-info/
+.pytest_cache/
