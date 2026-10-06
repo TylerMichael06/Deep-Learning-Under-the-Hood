@@ -1,7 +1,16 @@
 """Refactor safety net: every pipeline stage must give the same output as Hoda's original scripts (bca09e1).
 Regenerate golden.pkl only from the ORIGINAL code:  python tests/test_golden.py
-Deleted after the refactor (later model changes are supposed to change these numbers)."""
-import os, sys, tempfile
+Deleted after the refactor (later model changes are supposed to change these numbers).
+
+If this fails on your machine BEFORE you change anything, the reference file is the likely cause: golden.pkl was
+made on Python 3.14 / pandas 3 / Apple Silicon; older pandas (Python 3.10) can't read it and other CPUs can round
+differently. Rebuild it from the original code on your machine (don't commit the rebuilt file):
+    git worktree add ../orig d4aa878
+    (cd ../orig && python tests/test_golden.py)
+    cp ../orig/tests/golden.pkl tests/ && pytest
+    git worktree remove ../orig && git checkout -- tests/golden.pkl
+"""
+import os, tempfile
 import numpy as np, pandas as pd, torch
 from synthdata import EVAL_ARGS, SYN_ARGS, make_trips, write_kaggle_csvs
 

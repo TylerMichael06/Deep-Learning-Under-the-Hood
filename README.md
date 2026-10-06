@@ -62,7 +62,7 @@ data/                      public/ (downloaded, not in git) and collected/ (our 
 Python 3.10 or newer.
 
 ```
-python -m venv .venv
+python3 -m venv .venv              # Windows: py -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 pytest                             # about a minute, no data needed
