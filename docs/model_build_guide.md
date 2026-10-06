@@ -3,9 +3,10 @@
 This guide walks through the final model step by step: what each step does, why, and which part of the code does it.
 
 
-- **Code:** `obd_model.py` (data, model, training, main evaluation), `synthetic_test.py` (fault test with an answer key)
-  and `make_figures.py` (all report figures and tables, saved in `figures\`)
-- **Trained model:** `obd_pretrained.pt` (also stores the final alarm settings)
+- **Code:** the `obdfault` package in `src/obdfault/`: `data`, `features`, `model`, `train`, `scoring`, `faults`
+  (one module per step below), `evaluate` (main evaluation), `synthetic` (fault test with an answer key) and
+  `figures` (all report figures and tables, saved in `figures/`)
+- **Trained model:** `models/obd_pretrained.pt` (also stores the final alarm settings)
 - **Output:** binary **HEALTHY / FAULT** for every minute and every drive, plus the sensor that looks wrong
 
 ---
@@ -203,7 +204,7 @@ a mechanic would read it the same way (a lean/rich trim points to the air sensor
 
 ---
 
-## Step 9: Synthetic test with an answer key → `synthetic_test.py` (`synthetic_*.csv`; timeline figure: `figures\fig10_timelines.png`)
+## Step 9: Synthetic test with an answer key → `obdfault.synthetic` (`synthetic_*.csv`; timeline figure: `figures/fig10_timelines.png`)
 
 - 4 held-out cars (car11, car9, car8, exp2_car), each with its own model trained without that car
 - Test drives: about 30% left clean, the rest get **one** fault from the starter list (**some start partway through the drive**):
@@ -289,7 +290,7 @@ for every combination, so the numbers compare fairly.
 
 ---
 
-## Figures for the report → `make_figures.py` (saved in `figures\`)
+## Figures for the report → `obdfault.figures` (saved in `figures/`)
 
 | File | What it shows |
 |---|---|

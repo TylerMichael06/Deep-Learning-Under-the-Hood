@@ -2,6 +2,7 @@
 
 A small PyTorch **Transformer** that watches a car's OBD-II sensor readings and labels every minute, and every drive,
 **HEALTHY** or **FAULT**. When it raises an alarm, it also names the sensor that looks wrong.
+Model by Hoda; step-by-step details in [`docs/model_build_guide.md`](docs/model_build_guide.md).
 
 ## How it works
 
@@ -31,40 +32,73 @@ Scores are on drives long enough to judge (about 1 in 4 test drives is too short
 Baselines (same network without fine-tuning, per-car linear model): AUROC 0.77. Results vary by about ±0.03 between runs.
 Strongest on vacuum leaks and stuck coolant sensors (AUROC 0.96-0.97); weakest on small, steady airflow/pressure errors.
 
-Full details, settings, assumptions and limitations: [`model/model_build_guide.md`](model/model_build_guide.md).
+Full details, settings, assumptions and limitations: [`docs/model_build_guide.md`](docs/model_build_guide.md).
 
-## Folders
-
-```
-model/                   the model and its code
-  obd_model.py             data loading, model, training, main evaluation, saves the final model
-  synthetic_test.py        synthetic fault test with an answer key
-  make_figures.py          all report figures and the summary table
-  obd_pretrained.pt        the trained model (starting point for fine-tuning on a new car)
-  model_build_guide.md     step-by-step guide
-results/                 final results (spreadsheets)
-  obd_results_binary.csv   main evaluation: accuracy, precision, recall, F1, false alarms for every setting
-  obd_results_faults.csv   main evaluation: per car, per fault
-  obd_results_summary.csv  main evaluation: per car (false alarms, real trouble codes)
-  synthetic_results.csv    synthetic test: scorecard
-  synthetic_answer_key.csv synthetic test: every drive, true label vs the model's label
-  synthetic_minutes.csv    synthetic test: minute-by-minute scores (used for the figures)
-figures/                 report figures and the summary table
-```
-
-## Running it
-
-Data (not included in this repo): download the Kaggle "OBD-II datasets" by cephasax,
-<https://www.kaggle.com/datasets/cephasax/obdii-ds3>, and extract it to `Datasets/OBD-II datasets/` inside the repo folder (ignored by git).
-Needs Python 3 (`pip install -r requirements.txt`). From the `model` folder:
+## Project layout
 
 ```
-python obd_model.py --data "../Datasets/OBD-II datasets"        # main evaluation + final model (~30 min on CPU)
-python synthetic_test.py --data "../Datasets/OBD-II datasets"   # synthetic fault test (~15 min)
-python make_figures.py --data "../Datasets/OBD-II datasets"     # figures and summary table
+src/obdfault/              the code (a Python package)
+  config.py                  sensors, valid ranges, timing, folders, final settings
+  data.py                    read the Kaggle CSVs into drives on a 5-s grid   (guide Step 2)
+  features.py                1-minute windows + normalization                  (Step 3)
+  model.py                   the Transformer, training loop, ridge baseline    (Steps 4-5)
+  train.py                   pretrain + fine-tune per car; the final model     (Step 5)
+  scoring.py                 errors -> minute scores, alarm line, stuck check  (Steps 6-7)
+  faults.py                  faults injected for testing                       (Step 8)
+  evaluate.py                main evaluation                                   (Step 8)
+  synthetic.py               synthetic test with an answer key                 (Step 9)
+  figures.py                 report figures and the summary table
+scripts/                   exploration scripts (start with explore_data.py)
+tests/                     pytest, runs on made-up data (no download needed)
+models/obd_pretrained.pt   the trained model (starting point for fine-tuning on a new car)
+results/                   the current official numbers (spreadsheets)
+figures/                   report figures
+docs/model_build_guide.md  step-by-step guide to the model
+data/                      public/ (downloaded, not in git) and collected/ (our car logs); see data/README.md
 ```
 
-The scripts save spreadsheets to `results/` and figures to `figures/`.
+## Setup
+
+Python 3.10 or newer.
+
+```
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+pytest                             # about a minute, no data needed
+```
+
+Data: download the Kaggle "OBD-II datasets" by cephasax (<https://www.kaggle.com/datasets/cephasax/obdii-ds3>) and put the
+three `exp*.csv` files in `data/public/kaggle-obd2/`. That folder is ignored by git; see [`data/README.md`](data/README.md).
+
+## Running it (from the repo root)
+
+```
+python -m obdfault.evaluate     # main evaluation + final model (~30 min on CPU)
+python -m obdfault.synthetic    # synthetic fault test (~15 min)
+python -m obdfault.figures      # figures and summary table
+```
+
+They read `data/public/kaggle-obd2/` unless you pass `--data <folder>`. `--quick` (evaluate, synthetic) does a fast smoke run on one car. `--skip-final` (evaluate) leaves `models/obd_pretrained.pt` alone.
+Every run overwrites `results/`, `figures/` and `models/`. Use `git checkout -- results figures models` to get the committed versions back.
+
+## Working on it as a team
+
+- `main` is the shared base. Start every piece of work from it:
+  `git switch main && git pull && git switch -c <name>/<issue>-<topic>` (e.g. `tyler/33-maf-drift`).
+- Open a pull request into `main`, link its issue (`Closes #33`), get one teammate's review, and make sure `pytest` passes.
+- `results/`, `figures/` and `models/` hold the numbers the report uses. Only commit new ones in a PR that changes
+  the model, and say in the PR what moved.
+- Exploring? Put scripts in `scripts/` and import what you need from `obdfault`
+  (`python scripts/explore_data.py` is a starting point). Once something there is
+  reused by the pipeline, move it into `src/obdfault/`.
+- Where the open issues live in the code:
+
+| Issue | Start in |
+|---|---|
+| #30 Model architecture investigation | `model.py` (new models next to `VirtualSensorNet`) |
+| #32 Manifold pressure, #33 Airflow drift, #34 Thermostat warm-up | `scoring.py`, `faults.py` |
+| #35 Continued vehicle data collection | `data.py` (a loader for our own car logs) |
 
 ## Next step
 

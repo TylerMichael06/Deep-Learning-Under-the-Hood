@@ -1,4 +1,4 @@
-"""Report figures and the summary table for the final model. Reads the data and the result files in this folder.
+"""Report figures and the summary table for the final model. Reads the data and the result files in results/ and figures/.
 
 Usage (from the repo root, after obdfault.evaluate and obdfault.synthetic have been run):
   python -m obdfault.figures
@@ -18,7 +18,7 @@ NICE = {"RPM": "RPM", "SPEED": "Speed (km/h)", "LOAD": "Engine load (%)", "THROT
         "ECT": "Coolant temp (°C)", "IAT": "Intake air temp (°C)", "MAP": "Manifold pressure (kPa)",
         "MAF": "Mass air flow (g/s)", "STFT1": "Short-term fuel trim (%)"}
 FINAL = dict(method="fine-tuned (ours)", scoring="stuck check", cutoff=0.90, drive_rule=0.3, grace=5)
-SYN_VARIANT = {"shared cutoff": "", "stuck check": "only", "two-speed + stuck check": "stuck"}   # same scorings, as named in synthetic_test.py
+SYN_VARIANT = {"shared cutoff": "", "stuck check": "only", "two-speed + stuck check": "stuck"}   # same scorings, as named in obdfault.synthetic
 
 plt.rcParams.update({"font.size": 9, "axes.edgecolor": INK2, "axes.labelcolor": INK2, "xtick.color": INK2,
                      "ytick.color": INK2, "axes.spines.top": False, "axes.spines.right": False,
@@ -35,7 +35,7 @@ def save(fig, name):
     try: fig.savefig(os.path.join(OUT, name), dpi=160, bbox_inches="tight")
     except OSError:                                    # the old image is open in a viewer -> save a copy next to it
         name = name.replace(".png", "_new.png"); fig.savefig(os.path.join(OUT, name), dpi=160, bbox_inches="tight")
-    plt.close(fig); print("saved figures\\" + name)
+    plt.close(fig); print("saved figures/" + name)
 
 # ---------------------------------------------------------------- 1. the features
 PID = {"RPM": "0C", "SPEED": "0D", "LOAD": "04", "THROTTLE": "11", "ECT": "05", "IAT": "0F", "MAP": "0B", "MAF": "10", "STFT1": "06"}
@@ -176,7 +176,7 @@ def summary_table(B, R, syn):
     for lab, s in syn.items():
         rows.append(dict(test="Synthetic test (4 cars)", model="Ours (fine-tuned per car)", level=lab, AUROC=s["AUROC"],
                          accuracy=s["accuracy"], precision=s["precision"], recall=s["recall"], F1=s["F1"], false_alarms=s["false_alarm_rate"]))
-    T = pd.DataFrame(rows); T.to_csv(os.path.join(OUT, "summary_table.csv"), index=False); print("saved figures\\summary_table.csv")
+    T = pd.DataFrame(rows); T.to_csv(os.path.join(OUT, "summary_table.csv"), index=False); print("saved figures/summary_table.csv")
     show = T.copy()
     for c in ("AUROC", "accuracy", "precision", "recall", "F1"): show[c] = show[c].map(lambda v: f"{v:.2f}")
     show["false_alarms"] = show.false_alarms.map(lambda v: f"{v:.0%}")

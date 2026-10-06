@@ -1,11 +1,11 @@
-"""Synthetic fault test for the final model (obd_model.py), with an answer key.
+"""Synthetic fault test for the final model (obdfault.evaluate), with an answer key.
 
 For each held-out car: the model is pretrained WITHOUT that car, fine-tuned on its first 40% of driving and
-calibrated on the next 20% (same steps as obd_model.py). Its last 40% of drives are then used as the test:
+calibrated on the next 20% (same steps as obdfault.evaluate). Its last 40% of drives are then used as the test:
 ~30% are left clean, the rest get one designed fault. A fault can start partway through the drive, so the true
 label is known minute by minute. The model's HEALTHY/FAULT labels are compared with that answer key.
 
-Final settings (same as obd_model.py): the 2-minute score plus the stuck-sensor check, Relaxed cutoff (90th
+Final settings (same as obdfault.evaluate): the 2-minute score plus the stuck-sensor check, Relaxed cutoff (90th
 percentile of calibration scores), no alarms in the first 5 minutes of a drive, and a drive is FAULT if more than
 30% of its minutes are flagged. The other scorings (before the fixes, two-speed alarm) are printed for comparison.
 
@@ -35,7 +35,7 @@ SCENARIOS = [
     ("Fuel trim +8% (vacuum leak)",          "STFT1",    "offset", 8,    0),
     ("Throttle signal noisy (+/-5%)",        "THROTTLE", "noise",  5,    0),
     ("Intake air temp drifts up to +20 C",   "IAT",      "drift",  20,   0),
-    # realistic versions of the air faults: the engine computer reacts, so load and fuel trim change too (see obd_model.py)
+    # realistic versions of the air faults: the engine computer reacts, so load and fuel trim change too (see obdfault.evaluate)
     ("MAF reads 15% low, engine reacts",           "MAF", "maf_reacts", 0.85, 0),
     ("MAP reads +8 kPa from minute 5, engine reacts", "MAP", "map_reacts", 8,  5),
 ]
@@ -225,8 +225,8 @@ def main():
     print(f"too short to judge: {int((~key.judged).sum())} of {len(key)} drives")
     key[["car", "drive", "fault", "sensor", "start_min", "truth", "model_says", "model_blames", "minutes_to_alarm"]].to_csv(
         os.path.join(RESULTS, f"synthetic_answer_key{a.tag}.csv"), index=False)
-    rows.to_csv(os.path.join(RESULTS, f"synthetic_minutes{a.tag}.csv"), index=False)       # every scored minute, for make_figures.py
-    print("\nsaved synthetic_results.csv, synthetic_answer_key.csv, synthetic_minutes.csv  (figures: run make_figures.py)")
+    rows.to_csv(os.path.join(RESULTS, f"synthetic_minutes{a.tag}.csv"), index=False)       # every scored minute, for obdfault.figures
+    print("\nsaved synthetic_results.csv, synthetic_answer_key.csv, synthetic_minutes.csv  (figures: run python -m obdfault.figures)")
 
 if __name__ == "__main__":
     main()
