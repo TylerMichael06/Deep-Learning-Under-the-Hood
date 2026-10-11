@@ -128,7 +128,7 @@ def decide(rows, key, g, rule, variant="", min_judge=6):
     rows["judged"] = rows.minute >= g
     rows["flagged"] = (rows.score > rows.threshold) & rows.judged
     key = key.copy(); ids = list(zip(key.car, key.drive))
-    share = rows.groupby(["car", "drive"]).flagged.mean(); n_judged = rows.groupby(["car", "drive"]).judged.sum()
+    share = rows[rows.judged].groupby(["car", "drive"]).flagged.mean(); n_judged = rows.groupby(["car", "drive"]).judged.sum()
     key["judged"] = [n_judged.get(i, 0) >= min_judge for i in ids]
     key["model_says"] = ["TOO SHORT" if not j else "FAULT" if share.get(i, 0) > rule else "HEALTHY" for i, j in zip(ids, key.judged)]
     hit = rows[rows.flagged & rows.truth].groupby(["car", "drive"])

@@ -103,3 +103,9 @@ Every run overwrites `results/`, `figures/` and `models/`. Use `git checkout -- 
 ## Next step
 
 Test the model on our own cars' OBD-II logs: fine-tune on healthy drives, then check later drives.
+
+For BlueDriver exports:
+`python -m obdfault.real_data <log.csv> --output artifacts/real_data` loads the
+pretrained model and writes sensor coverage, reconstruction errors, and plots.
+Unlabeled logs produce exploratory errors; calibrated verdicts and accuracy
+require separate healthy calibration drives and verified test labels.
