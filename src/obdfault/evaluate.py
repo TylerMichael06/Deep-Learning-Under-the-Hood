@@ -83,12 +83,12 @@ def evaluate_car(unit, trips, a):
                                  test_windows=int(warm_c.sum()), false_alarm_rate=fa,
                                  clean_drives_judged=int(judged_c.sum()), clean_drives_too_short=int((~judged_c).sum()),
                                  real_code_windows=int(Dclean["code"].sum()), real_code_AUROC=real))
-                clean_trip_hit = pd.Series(fc).groupby(trip_c).mean()[judged_c]
+                clean_trip_hit = pd.Series(fc[warm_c]).groupby(trip_c[warm_c]).mean().reindex(judged_c.index)[judged_c]
                 for f, Df, s_f, who, warm_f in scored:
                     ch = CH.index(ALL_FAULTS[f][0]); ff = (s_f > thr) & warm_f          # FAULT calls on faulty minutes
                     y = np.r_[np.zeros(clean_ok.sum()), np.ones(len(s_f))]
                     judged_f = pd.Series(warm_f).groupby(Df["trip"]).sum() >= a.min_judge
-                    trip_hit = pd.Series(ff).groupby(Df["trip"]).mean()[judged_f]   # share of each drive's minutes flagged
+                    trip_hit = pd.Series(ff[warm_f]).groupby(Df["trip"][warm_f]).mean().reindex(judged_f.index)[judged_f]   # share of judged windows flagged
                     for rule in a.drive_rules:        # a whole drive is FAULT if more than `rule` of its minutes are flagged
                         rows.append(dict(car=unit, method=name, scoring=scoring, cutoff=q, grace_min=a.grace, drive_rule=rule,
                                          fault=f, sensor=ALL_FAULTS[f][0], AUROC=auroc(y, np.r_[s_clean[clean_ok], s_f]),
