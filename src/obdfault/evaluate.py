@@ -39,7 +39,7 @@ import numpy as np, pandas as pd
 from .config import CH, DT, W, FAULTY_CARS, FINAL_SCORING, KAGGLE_DATA, RESULTS, add_ltft
 from .data import load_kaggle, load_ved
 from .features import PHYSICS, windows
-from .model import channel_errors, ridge_errors
+from .model import resolve_device, channel_errors, ridge_errors
 from .scoring import calibrate, slow_stuck_scorer, auroc
 from .faults import ALL_FAULTS, inject
 from .train import prepare_car, save_final
@@ -156,7 +156,11 @@ def main():
     ap.add_argument("--ved-test", type=int, default=4, help="VED cars held out as extra test cars (never pretrained on)")
     ap.add_argument("--ltft", action="store_true", help="experiment: add long-term fuel trim (bank 1) as a 10th sensor")
     ap.add_argument("--quick", action="store_true")
+    ap.add_argument("--device", choices=["cpu", "mps", "cuda", "auto"], default="cpu",
+                    help="Transformer backend (default: cpu; auto prefers CUDA, then MPS, then CPU)")
     a = ap.parse_args()
+    a.device = str(resolve_device(a.device))
+    print(f"Transformer device: {a.device}", flush=True)
     if a.quick: a.epochs, a.ft_epochs = 3, 2
     if not a.physics: PHYSICS.clear()                    # final model: no physics inputs
     if a.ltft: add_ltft()
