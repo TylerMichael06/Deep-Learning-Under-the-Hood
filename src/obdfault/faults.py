@@ -1,6 +1,6 @@
 """The sensor faults injected into test drives."""
 import numpy as np
-from .config import CH, W
+from .config import CH, DT, W
 
 # ====================== STEP 5: FAULTS TO INJECT ===============================
 # Realistic single-sensor faults, applied to whole drives in raw units (before the model sees them).
@@ -45,6 +45,27 @@ FAULTS_X = {
     "MAP reads +10 kPa, engine reacts (realistic)":   ("MAP", map_reacts(10)),
 }
 ALL_FAULTS = {**FAULTS, **FAULTS_X}
+
+def delay_coolant(trip, rate):
+    """Offline sensitivity scenario: ECT(t) follows the recorded ECT(rate*t).
+
+    This is a time warp, not a physical thermostat simulator. Keep other sensors
+    and missingness unchanged. Do not interpolate across ECT gaps over 15 s;
+    unsupported points retain their original readings. The caller reports
+    unchanged scenarios rather than counting them as injected faults.
+    """
+    if not 0 < rate < 1:
+        raise ValueError("rate must be between 0 and 1")
+    X = trip["X"].copy(); j = CH.index("ECT")
+    idx = np.flatnonzero(np.isfinite(X[:, j]))
+    if len(idx) < 2:
+        return dict(trip, X=X)
+    query = idx[0] + rate * (idx - idx[0])
+    right = np.searchsorted(idx, query).clip(1, len(idx) - 1)
+    supported = ((idx[right] - idx[right - 1]) * DT <= 15) | np.isin(query, idx)
+    warped = np.interp(query, idx, X[idx, j])
+    X[idx[supported], j] = warped[supported]
+    return dict(trip, X=X)
 
 def inject(trips, fault):
     c, f = ALL_FAULTS[fault]; j = CH.index(c); out = []

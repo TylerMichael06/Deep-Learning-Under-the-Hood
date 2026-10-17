@@ -76,13 +76,18 @@ def load_ved(folder, n_pre, n_test, rows_pre=2000, rows_test=6000, seed=0):
                 lo, hi = RANGE[c]; d[c] = np.where((v >= lo) & (v <= hi), v, np.nan)
             tr = resample(d)
             if tr is None: continue
+            tr["runtime_source"] = "segment_elapsed"  # VED runtime above is constructed from recording time
             trips.append(dict(unit=f"ved{vid}", order=float(trip), test_only=test, **tr)); total += len(tr["X"])
             if total >= cap: break
     print(f"VED: {len(pre_ids)} pretraining cars, {len(test_ids)} held-out test cars, {len(trips)} drives")
     return trips
 
 def resample(g):
-    """Put one trip on a 5 s grid. A value is kept only if a real reading is within 12 s of the grid point."""
+    """Put one trip on a 5 s grid, keeping values within 12 s of a real reading.
+
+    runtime_source distinguishes a runtime-column estimate from the elapsed-time
+    fallback; it does not guarantee that the recording includes an engine start.
+    """
     g = g.dropna(subset=["t"]); t = g.t.to_numpy(float)
     if len(t) < 3: return None
     keep = np.r_[True, np.diff(t) > 0]; g, t = g[keep], t[keep]; t = t - t[0]
@@ -98,4 +103,5 @@ def resample(g):
     rt = g.runtime.to_numpy(float); ok = ~np.isnan(rt)
     start = (rt[ok][0] - t[ok][0]) if ok.any() else 0.0            # engine runtime at the trip's first row
     code = np.interp(grid, t, g.code.to_numpy(float)) > 0
-    return dict(X=X, ctx=((start + grid) / 60).astype(np.float32), code=code)
+    return dict(X=X, ctx=((start + grid) / 60).astype(np.float32), code=code,
+                runtime_source="engine_runtime" if ok.any() else "segment_elapsed")

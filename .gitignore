@@ -3,6 +3,15 @@ data/public/
 *.zip
 EngineFaultDB_Final.csv
 
+# Local thermostat experiments; keep official results already tracked in Git.
+/results/thermostat_*/
+
+# Generated report evidence stays local; Markdown reports and PNG figures are versioned.
+/docs/assets/thermostat_final/evidence/
+
+# Local run backups and timing logs
+/.local-archive/
+
 # Python cache
 __pycache__/
 *.pyc

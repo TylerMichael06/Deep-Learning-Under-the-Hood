@@ -66,3 +66,65 @@ def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True):   # final model
 
 def auroc(y, s):
     return roc_auc_score(y, s) if 0 < y.sum() < len(y) else np.nan
+
+
+class WarmupRise:
+    """Experimental per-car expected ECT rise, trained only on adaptation trips.
+
+    Features use the initial observed temperature, initial IAT, elapsed recording
+    time and accumulated RPM*load. No engine-start claim is made for unknown
+    runtime. Scores are causal one-minute means of positive temperature deficits.
+    No score means insufficient evidence, not healthy. This is opt-in only.
+    """
+    def __init__(self, horizon=10., cold_max=50.):
+        self.horizon, self.cold_max = horizon, cold_max
+
+    def inputs(self, trip):
+        X = trip["X"]; n = len(X); t = np.arange(n) * DT / 60
+        ect, iat, rpm, load = (X[:, CH.index(c)] for c in ("ECT", "IAT", "RPM", "LOAD"))
+        first = np.flatnonzero(np.isfinite(ect))
+        ambient = np.flatnonzero(np.isfinite(iat[:W]))
+        empty = (np.full((n, 6), np.nan), np.full(n, np.nan))
+        if not len(first) or first[0] * DT / 60 > 1 or not len(ambient):
+            return empty
+        start = first[0]; e0 = ect[start]; a0 = iat[ambient[0]]
+        if e0 >= self.cold_max:
+            return empty
+        if trip.get("runtime_source") == "engine_runtime":
+            if not 0 <= trip["ctx"][0] <= 1:
+                return empty
+        elapsed = np.maximum(t - t[start], 0)
+        observed = np.isfinite(rpm) & np.isfinite(load) & (np.arange(n) >= start)
+        heat = np.cumsum(np.where(observed, np.maximum(rpm, 0) / 1000 * np.maximum(load, 0) / 100, 0)) * DT / 60
+        coverage = np.cumsum(observed) / np.maximum(np.arange(n) - start + 1, 1)
+        logtime, logheat = np.log1p(elapsed), np.log1p(heat)
+        A = np.column_stack([logtime, logheat, logtime ** 2,
+                             logheat ** 2, (e0 - a0) * logtime, e0 * logtime])
+        valid = (t >= 1) & (t <= self.horizon) & (coverage >= .9) & observed & np.isfinite(ect)
+        A[~valid] = np.nan
+        return A, ect - e0
+
+    def fit(self, trips):
+        pieces = []
+        for tr in trips:
+            A, y = self.inputs(tr); ok = np.isfinite(A).all(1) & np.isfinite(y)
+            if ok.sum() >= W:
+                pieces.append((A[ok], y[ok]))
+        if len(pieces) < 3:
+            raise ValueError("At least three usable adaptation trips are required")
+        A = np.concatenate([a for a, _ in pieces]); y = np.concatenate([y for _, y in pieces])
+        weight = np.concatenate([np.full(len(a), 1 / len(a)) for a, _ in pieces])
+        self.mean = np.average(A, axis=0, weights=weight)
+        self.scale = np.sqrt(np.average((A - self.mean) ** 2, axis=0, weights=weight)) + 1e-6
+        B = np.column_stack([np.ones(len(A)), (A - self.mean) / self.scale])
+        penalty = np.eye(B.shape[1]); penalty[0, 0] = 0
+        self.coef = np.linalg.solve(B.T @ (weight[:, None] * B) + penalty, B.T @ (weight * y))
+        self.fit_trips = len(pieces)
+        return self
+
+    def score(self, trip):
+        A, y = self.inputs(trip)
+        prediction = np.column_stack([np.ones(len(A)), (A - self.mean) / self.scale]) @ self.coef
+        deficit = np.maximum(prediction - y, 0)
+        # Roll over raw time rows, not over a compressed list of surviving windows.
+        return pd.Series(deficit).rolling(W, min_periods=W).mean().to_numpy()
