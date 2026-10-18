@@ -259,6 +259,9 @@ for every combination, so the numbers compare fairly.
 3. **Physics inputs:** ready-made engine relationships given to the network (air per engine turn = MAF ÷ RPM,
    load ÷ MAP, load × RPM); hidden whenever a sensor they are built from is hidden. Run with `--physics`.
 4. **Realistic air faults:** the MAF/MAP faults also change engine load and fuel trim, as in a real car (test change only).
+5. **Bias score (issue #33):** the signed prediction error (prediction − reading) of each sensor, standardized on the car's
+   calibration drives and added up through the drive with a two-sided CUSUM (allowance k per window), so a steady offset
+   or drift keeps growing while noise cancels out. Run as scoring "stuck check + bias".
 
 | Configuration | Main AUROC | Main F1 (drive) | Main false alarms | Synthetic F1 (drive) | Synthetic false alarms |
 |---|---|---|---|---|---|
@@ -268,6 +271,8 @@ for every combination, so the numbers compare fairly.
 | + physics inputs | 0.79 | 0.58 | 7% | 0.69 | 7% |
 | + physics + stuck check | 0.81 | 0.61 | 5% | 0.68 | 11% |
 | + all: physics + two-speed + stuck check | 0.82 | 0.63 | 11% | 0.62 | 15% |
+| stuck check (issue #33 run) | 0.80 | 0.75 | 9% | 0.81 | 20% |
+| + bias score (issue #33 run) | 0.73 | 0.73 | 35% | 0.86 | 20% |
 
 - **Stuck check: kept.** Stuck coolant caught in 78% of drives instead of 44% (main test) and 3/3 instead of 1/3
   (synthetic), with only a small rise in false alarms. Best overall on both tests.
@@ -276,6 +281,12 @@ for every combination, so the numbers compare fairly.
 - **Physics inputs: dropped.** Small gains on the air faults in the main test (MAF drift caught 23% vs 10%, MAP offset
   16% vs 4%) but more false alarms and slightly worse on the synthetic test. Only 4 of 14 cars have a MAF sensor,
   which is likely too little data for the network to use them well.
+- **Bias score (issue #33): dropped.** It catches far more of the steady air faults (MAP +10 kPa caught 9% → 72% of drives,
+  MAF drift 29% → 50%; synthetic F1 0.81 → 0.86), but false alarms on clean drives rise from 9% to 35% per drive in the
+  main test (per minute 12% → 48%), and raising the allowance k (0.5, 1, 2) did not bring them down. Likely reason (not
+  proven): the alarm line is set from calibration drives, where the bias score is near zero most of the time; test drives
+  come later, so a small steady healthy error between the model and the car adds up and normal later drives cross the line.
+  The two "issue #33 run" rows were measured together in a separate run, so compare them with each other, not with the rows above.
 - **Realistic air faults: kept in the test.** They are caught far more often (45-60% of drives) than the sensor-only
   versions (5-40%), so in a real car these faults would mostly be visible through the fuel trim.
 
