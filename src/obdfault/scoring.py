@@ -45,6 +45,32 @@ def unit_scale(x_cal, x):
     med, top = np.median(x_cal), np.quantile(x_cal, .99)
     return (x - med) / max(top - med, 1e-6)
 
+# ---- EXPERIMENT (issue #33): bias score for slow air-sensor drift; off in the final model ------------------------------
+def cusum(z, k):
+    """Two-sided CUSUM through one drive. z: (N, C) standardized signed errors in time order (NaN = missing).
+    'up' adds up readings lower than predicted, 'down' higher; each total forgets k per window and never drops below 0,
+    so noise stays near 0 while a steady offset keeps growing. Returns (N, C) = max(up, down), NaN where z is missing."""
+    up, down, out = np.zeros(z.shape[1]), np.zeros(z.shape[1]), np.full(z.shape, np.nan)
+    for i, zi in enumerate(z):
+        ok = ~np.isnan(zi)
+        up[ok] = np.maximum(0, up[ok] + zi[ok] - k); down[ok] = np.maximum(0, down[ok] - zi[ok] - k)
+        out[i, ok] = np.maximum(up, down)[ok]
+    return out
+
+def bias_scorer(B_cal, Dcal, k, grace):
+    """Signed-error (bias) score. On this car's calibration windows after the warm-up, learn each sensor's usual signed
+    error (mean, std) -> z-score; then run a two-sided CUSUM per drive, starting after `grace` minutes.
+    Window score = worst sensor's total (0 if no sensor has a value). Returns score(B, D) and the calibration scores."""
+    warm = lambda D: (D["start"] + W) * DT / 60 >= grace
+    Bw = B_cal[warm(Dcal)]; ok = (~np.isnan(Bw)).sum(0) >= 10      # sensors seen enough to calibrate
+    m = np.where(ok, np.nanmean(np.where(ok, Bw, 0), 0), np.nan); s = np.where(ok, np.nanstd(np.where(ok, Bw, 0), 0) + 1e-6, np.nan)
+    def score(B, D):
+        Z = np.where(warm(D)[:, None], (B - m) / s, np.nan); T = np.full(Z.shape, np.nan)
+        for t in np.unique(D["trip"]): i = D["trip"] == t; T[i] = cusum(Z[i], k)
+        T = np.where(np.isnan(T), -np.inf, T); sc, who = T.max(1), T.argmax(1)
+        return np.where(np.isfinite(sc), sc, 0.0), np.where(np.isfinite(sc), who, -1)
+    return score, score(B_cal, Dcal)[0]
+
 def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True):   # final model: use_slow=False ("stuck check")
     """Fixes for slow faults. Score = the largest of
        (1) the usual 2-minute score, (2) a slow 10-minute score (catches creeping drift), and
