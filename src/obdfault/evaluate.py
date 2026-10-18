@@ -49,9 +49,9 @@ def evaluate_car(unit, trips, a):
     if P is None: return None, None
     base, tuned, mu, sd, Dtr, Dcal, Dclean, test_trips = (P[k] for k in ("base", "tuned", "mu", "sd", "Dtr", "Dcal", "Dclean", "test_trips"))
     has = Dclean["m"].numpy().mean(0) > 0.5
-    methods = {"pretrained only": lambda Ds: [channel_errors(base, d) for d in Ds],
-               "fine-tuned (ours)": lambda Ds: [channel_errors(tuned, d) for d in Ds],
-               "ridge baseline": lambda Ds: ridge_errors(Dtr, Ds)}
+    methods = {"pretrained only": lambda Ds: [channel_errors(base, d, signed=True) for d in Ds],
+               "fine-tuned (ours)": lambda Ds: [channel_errors(tuned, d, signed=True) for d in Ds],
+               "ridge baseline": lambda Ds: ridge_errors(Dtr, Ds, signed=True)}
     fault_trips = {f: inject(test_trips, f) for f in ALL_FAULTS if has[CH.index(ALL_FAULTS[f][0])]}
     fault_sets = {f: windows(t, mu, sd, stride=2) for f, t in fault_trips.items()}
     # warm-up grace: minutes before `a.grace` never raise an alarm and are not used to set the cutoff (cold starts)
@@ -59,17 +59,20 @@ def evaluate_car(unit, trips, a):
     warm_cal, warm_clean = minute(Dcal) >= a.grace, minute(Dclean) >= a.grace
     rows, summ = [], []
     for name, errs in methods.items():
-        Es = errs([Dcal, Dclean] + list(fault_sets.values()))
+        Es, Bs = zip(*errs([Dcal, Dclean] + list(fault_sets.values())))     # squared and signed errors
         clean_ok = ~Dclean["code"]
-        # "stuck check" is the final scoring; the other two are compared in the results (two-speed = EXPERIMENT, not kept)
-        for scoring in ("shared cutoff", "stuck check", "two-speed + stuck check"):
+        # "stuck check" is the final scoring; the others are compared in the results
+        # (two-speed = EXPERIMENT, not kept; "+ bias" = EXPERIMENT for issue #33)
+        for scoring in ("shared cutoff", "stuck check", "two-speed + stuck check", "stuck check + bias"):
             if scoring == "shared cutoff":
-                sc, s_cal = calibrate(Es[0], Dcal["trip"], a.smooth); score = lambda E, D_, trips_: sc(E, D_["trip"])
+                sc, s_cal = calibrate(Es[0], Dcal["trip"], a.smooth); score = lambda E, D_, trips_, B=None: sc(E, D_["trip"])
             else:
-                score, s_cal = slow_stuck_scorer(Es[0], Dcal, P["cal_trips"], a, use_slow=scoring != "stuck check")
-            s_clean, _ = score(Es[1], Dclean, test_trips)
+                score, s_cal = slow_stuck_scorer(Es[0], Dcal, P["cal_trips"], a, use_slow=scoring == "two-speed + stuck check",
+                                                 B_cal=Bs[0] if scoring == "stuck check + bias" else None)
+            s_clean, _ = score(Es[1], Dclean, test_trips, Bs[1])
             real = auroc(Dclean["code"].astype(int), s_clean) if Dclean["code"].any() else np.nan
-            scored = [(f, Df, *score(E, Df, fault_trips[f]), minute(Df) >= a.grace) for (f, Df), E in zip(fault_sets.items(), Es[2:])]
+            scored = [(f, Df, *score(E, Df, fault_trips[f], B), minute(Df) >= a.grace)
+                      for (f, Df), E, B in zip(fault_sets.items(), Es[2:], Bs[2:])]
             # Only judged data is scored: minutes after the warm-up, and drives with at least a.min_judge windows
             # (1 minute) after the warm-up. Shorter drives are "too short to judge" and counted separately.
             warm_c, trip_c = warm_clean[clean_ok], Dclean["trip"][clean_ok]
@@ -145,6 +148,8 @@ def main():
     ap.add_argument("--grace", type=float, default=5, help="warm-up grace period (minutes): no alarms at the start of a drive")
     ap.add_argument("--smooth-long", type=int, default=60, help="slow score: average over this many windows (60 x 10 s = 10 min)")
     ap.add_argument("--min-flat", type=float, default=5, help="stuck check: never flag a freeze shorter than this (minutes)")
+    ap.add_argument("--cusum-k", type=float, default=0.5,
+                    help="EXPERIMENT (issue #33), 'stuck check + bias' scoring: allowance per window in the bias running total")
     # ---- EXPERIMENT options (all off by default; the final model uses none of them) ----
     ap.add_argument("--physics", action="store_true",
                     help="add the physics inputs (tested: slightly better on air faults, more false alarms; not used in the final model)")

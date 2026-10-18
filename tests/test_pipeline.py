@@ -23,6 +23,7 @@ def test_pipeline_runs_end_to_end():
     trips = make_trips()
     R, summary = evaluate_car("car2", trips, EVAL_ARGS)
     assert set(R.method) == {"pretrained only", "fine-tuned (ours)", "ridge baseline"}
+    assert set(R.scoring) == {"shared cutoff", "stuck check", "two-speed + stuck check", "stuck check + bias"}
     assert R.AUROC.notna().any() and R.AUROC.dropna().between(0, 1).all()
     assert summary.false_alarm_rate.between(0, 1).all()
     rows, key = run_synthetic_car("car2", trips, SYN_ARGS, np.random.RandomState(42))

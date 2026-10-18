@@ -4,9 +4,9 @@ import numpy as np, pandas as pd
 
 # settings for a fast run: 1 training epoch; two cutoffs / drive rules so the comparison loops still run
 EVAL_ARGS = argparse.Namespace(epochs=1, ft_epochs=1, smooth=12, cutoffs=[0.90, 0.95], min_judge=6, drive_rules=[0.3, 0.5],
-                               grace=5, smooth_long=60, min_flat=5)
+                               grace=5, smooth_long=60, min_flat=5, cusum_k=0.5)
 SYN_ARGS = argparse.Namespace(epochs=1, ft_epochs=1, smooth=12, smooth_long=60, graces=[5, 0], min_flat=5, cutoff=0.90,
-                              clean_share=0.3)
+                              clean_share=0.3, cusum_k=0.5)
 KAGGLE_FILES = ("exp1_14drivers_14cars_dailyRoutes.csv", "exp2_19drivers_1car_1route.csv", "exp3_4drivers_1car_1route.csv")
 
 
