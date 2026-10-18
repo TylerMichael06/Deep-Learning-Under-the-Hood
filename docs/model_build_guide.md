@@ -251,7 +251,7 @@ MAF 15% low (sensor only) 1/5 · MAP +8 kPa (sensor only) 0/2 · clean drives 12
 
 ## Step 10: The fixes we tested, and how much better the model got 
 
-After the first version, four fixes were tested. **Both tests were re-run on exactly the same cars, drives and faults**
+After the first version, five fixes were tested. **Both tests were re-run on exactly the same cars, drives and faults**
 for every combination, so the numbers compare fairly.
 
 1. **Two-speed alarm:** a second, slow score averaged over 10 minutes, to catch creeping faults.
