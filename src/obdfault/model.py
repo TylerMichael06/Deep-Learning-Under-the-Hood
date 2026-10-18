@@ -3,6 +3,23 @@ import numpy as np, torch, torch.nn as nn
 from .config import CH, W
 from .features import PHYSICS, visible
 
+def resolve_device(name="cpu"):
+    """Resolve an explicit backend; never silently replace a requested GPU with CPU."""
+    if name == "auto":
+        name = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+    if name not in ("cpu", "mps", "cuda"):
+        raise ValueError(f"Unknown device: {name}")
+    if name == "mps" and not torch.backends.mps.is_available():
+        raise RuntimeError("MPS is unavailable in this process. Run from macOS Terminal with GPU access, or use --device cpu.")
+    if name == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA is unavailable. Install a CUDA-enabled PyTorch build and a compatible NVIDIA driver, or use --device cpu.")
+    return torch.device(name)
+
+
+def device_batch(D, b, device):
+    """Keep datasets on CPU for NumPy/ridge; transfer only the current neural-network batch."""
+    return tuple(D[k][b].to(device) for k in ("x", "m", "ctx"))
+
 # ======================= STEP 3: MODEL =========================================
 class VirtualSensorNet(nn.Module):
     """Transformer over a 1-minute window. Input per time step: sensor values and physics inputs (hidden ones zeroed),
@@ -23,17 +40,19 @@ def hide_random(m):
     ms = m[:, :len(CH)]
     r = torch.rand_like(ms); r[ms == 0] = -1
     rank = r.argsort(-1, descending=True).argsort(-1)
-    k = torch.randint(1, 3, (len(ms), 1))
+    k = torch.randint(1, 3, (len(ms), 1), device=ms.device)
     hide = ((rank < k) & (ms > 0)).float()
     return visible(ms * (1 - hide), m), hide
 
 def fit(model, D, idx_tr, idx_va, epochs, lr, bs=256, patience=5):
+    device = next(model.parameters()).device
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
     rng = np.random.RandomState(0); best, state, bad = np.inf, None, 0
     def loss_on(b):
-        vis, hide = hide_random(D["m"][b])
-        pred = model(D["x"][b], vis, D["ctx"][b])
-        return (((pred - D["x"][b][:, :, :len(CH)]) ** 2) * hide[:, None, :]).sum() / (hide.sum() * W + 1e-6)
+        x, m, ctx = device_batch(D, b, device)
+        vis, hide = hide_random(m)
+        pred = model(x, vis, ctx)
+        return (((pred - x[:, :, :len(CH)]) ** 2) * hide[:, None, :]).sum() / (hide.sum() * W + 1e-6)
     for ep in range(epochs):
         model.train(); perm = idx_tr[rng.permutation(len(idx_tr))]
         for i in range(0, len(perm), bs):
@@ -51,12 +70,15 @@ def fit(model, D, idx_tr, idx_va, epochs, lr, bs=256, patience=5):
 def channel_errors(model, D, bs=1024):
     """(N, C): error of each sensor when it alone is hidden and predicted from the others. NaN if the window lacks it."""
     model.eval(); N = len(D["x"]); E = np.full((N, len(CH)), np.nan)
+    device = next(model.parameters()).device
     for c in range(len(CH)):
         idx = np.where(D["m"][:, c].numpy() > 0)[0]
         for i in range(0, len(idx), bs):
-            b = idx[i:i + bs]; vis = D["m"][b][:, :len(CH)].clone(); vis[:, c] = 0
-            pred = model(D["x"][b], visible(vis, D["m"][b]), D["ctx"][b])
-            E[b, c] = ((pred[:, :, c] - D["x"][b][:, :, c]) ** 2).mean(1).numpy()
+            b = idx[i:i + bs]
+            x, m, ctx = device_batch(D, b, device)
+            vis = m[:, :len(CH)].clone(); vis[:, c] = 0
+            pred = model(x, visible(vis, m), ctx)
+            E[b, c] = ((pred[:, :, c] - x[:, :, c]) ** 2).mean(1).cpu().numpy()
     return E
 
 # ---- baseline: per-car linear virtual sensor ----------------------------------

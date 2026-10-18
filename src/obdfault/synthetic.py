@@ -20,7 +20,7 @@ from sklearn.metrics import roc_auc_score
 from .config import CH, DT, W, KAGGLE_DATA, RESULTS
 from .data import load_kaggle
 from .features import PHYSICS, windows
-from .model import channel_errors
+from .model import resolve_device, channel_errors
 from .scoring import calibrate, unit_scale, flat_minutes, FLAT_SENSORS
 from .faults import maf_reacts, map_reacts
 from .train import prepare_car
@@ -187,7 +187,11 @@ def main():
     ap.add_argument("--min-flat", type=float, default=5, help="stuck check: never flag a freeze shorter than this (minutes)")
     ap.add_argument("--physics", action="store_true", help="add the physics inputs (not used in the final model)")
     ap.add_argument("--tag", default="", help="added to output file names, e.g. _physics")
+    ap.add_argument("--device", choices=["cpu", "mps", "cuda", "auto"], default="cpu",
+                    help="Transformer backend (default: cpu; auto prefers CUDA, then MPS, then CPU)")
     a = ap.parse_args()
+    a.device = str(resolve_device(a.device))
+    print(f"Transformer device: {a.device}", flush=True)
     if not a.physics: PHYSICS.clear()
     if a.quick: a.epochs, a.ft_epochs, a.cars = 3, 2, a.cars[:1]
     rng = np.random.RandomState(42); trips = load_kaggle(a.data)

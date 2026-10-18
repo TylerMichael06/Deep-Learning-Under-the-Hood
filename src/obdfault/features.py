@@ -21,7 +21,7 @@ def visible(vis_s, m):
     """Sensor visibility (B, C) -> visibility of sensors + physics inputs (B, C + K). A physics input is hidden whenever a
     sensor it is built from is hidden (no peeking). Final model: no physics inputs, returns vis_s unchanged."""
     if not PHYSICS: return vis_s
-    dep = torch.tensor([[c in srcs for c in CH] for _, srcs, _ in PHYSICS], dtype=torch.float32)   # (K, C)
+    dep = torch.tensor([[c in srcs for c in CH] for _, srcs, _ in PHYSICS], dtype=vis_s.dtype, device=vis_s.device)   # (K, C)
     blocked = ((1 - vis_s) @ dep.T).clamp(max=1)
     return torch.cat([vis_s, m[:, len(CH):] * (1 - blocked)], 1)
 
