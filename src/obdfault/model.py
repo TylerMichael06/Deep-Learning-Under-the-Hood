@@ -48,23 +48,25 @@ def fit(model, D, idx_tr, idx_va, epochs, lr, bs=256, patience=5):
     model.load_state_dict(state); return model
 
 @torch.no_grad()
-def channel_errors(model, D, bs=1024):
-    """(N, C): error of each sensor when it alone is hidden and predicted from the others. NaN if the window lacks it."""
-    model.eval(); N = len(D["x"]); E = np.full((N, len(CH)), np.nan)
+def channel_errors(model, D, bs=1024, signed=False):
+    """(N, C): error of each sensor when it alone is hidden and predicted from the others. NaN if the window lacks it.
+    signed=True also returns the mean signed error (prediction - reading), (N, C), used by the bias score."""
+    model.eval(); N = len(D["x"]); E = np.full((N, len(CH)), np.nan); S = E.copy()
     for c in range(len(CH)):
         idx = np.where(D["m"][:, c].numpy() > 0)[0]
         for i in range(0, len(idx), bs):
             b = idx[i:i + bs]; vis = D["m"][b][:, :len(CH)].clone(); vis[:, c] = 0
             pred = model(D["x"][b], visible(vis, D["m"][b]), D["ctx"][b])
-            E[b, c] = ((pred[:, :, c] - D["x"][b][:, :, c]) ** 2).mean(1).numpy()
-    return E
+            r = (pred[:, :, c] - D["x"][b][:, :, c]).numpy(); E[b, c] = (r ** 2).mean(1); S[b, c] = r.mean(1)
+    return (E, S) if signed else E
 
 # ---- baseline: per-car linear virtual sensor ----------------------------------
-def ridge_errors(D_fit, D_list, lam=1.0):
+def ridge_errors(D_fit, D_list, lam=1.0, signed=False):
     """For each sensor, a ridge regression from the other sensors (+ warm-up time) at the same instant,
-    fitted on this car's own fine-tune data (sensors only, no physics inputs). Returns an (N, C) error array for each dataset."""
+    fitted on this car's own fine-tune data (sensors only, no physics inputs). Returns an (N, C) error array for each dataset;
+    signed=True returns (error, signed error) pairs instead, like channel_errors."""
     C = len(CH); xf, mf = D_fit["x"].numpy()[:, :, :C], D_fit["m"].numpy()[:, :C]; present = mf.mean(0) > 0.5
-    outs = [np.full((len(D["x"]), len(CH)), np.nan) for D in D_list]
+    outs = [np.full((len(D["x"]), len(CH)), np.nan) for D in D_list]; sgn = [E.copy() for E in outs]
     for c in np.where(present)[0]:
         others = [j for j in np.where(present)[0] if j != c]
         rows = mf[:, others + [c]].all(1)
@@ -72,8 +74,8 @@ def ridge_errors(D_fit, D_list, lam=1.0):
         A = np.concatenate([xf[rows][:, :, others], D_fit["ctx"].numpy()[rows][..., None], np.ones((rows.sum(), W, 1))], -1).reshape(-1, len(others) + 2)
         y = xf[rows][:, :, c].reshape(-1)
         w = np.linalg.solve(A.T @ A + lam * np.eye(A.shape[1]), A.T @ y)
-        for D, E in zip(D_list, outs):
+        for D, E, S in zip(D_list, outs, sgn):
             x, m = D["x"].numpy()[:, :, :C], D["m"].numpy()[:, :C]; ok = m[:, others + [c]].all(1)
             B = np.concatenate([x[ok][:, :, others], D["ctx"].numpy()[ok][..., None], np.ones((ok.sum(), W, 1))], -1)
-            E[ok, c] = ((B @ w - x[ok][:, :, c]) ** 2).mean(1)
-    return outs
+            r = B @ w - x[ok][:, :, c]; E[ok, c] = (r ** 2).mean(1); S[ok, c] = r.mean(1)
+    return list(zip(outs, sgn)) if signed else outs
