@@ -296,8 +296,10 @@ for every combination, so the numbers compare fairly.
   errors, mostly on sensors other than the air path, and calibration offsets do not transfer between drives (as Berton,
   Frisk & Nyberg (2004) found for a truck engine air path). It improves F1 (main 0.75 → 0.80, synthetic 0.81 → 0.85) and
   catches more steady air faults (MAP +10 kPa 9% → 67% of drives, MAF drift 29% → 52%). It is not adopted because
-  false alarms per drive still rise (main 9% → 17%, synthetic 20% → 27%), above the 3-point limit, and MAF drift AUROC
-  barely moves (0.61 → 0.62). Most of the extra false alarms come from cars with few calibration drives (car4 has 2).
+  false alarms per drive still rise (main 9% → 17%, synthetic 20% → 27%), more than the 3 percentage points of extra false
+  alarms we allow for a fix to be adopted, and MAF drift AUROC barely moves (0.61 with stuck check alone → 0.62).
+  Most of the extra false alarms are concentrated in a few cars: car4 (81% of minutes, with only 2 calibration drives),
+  car11 (30%), car12 (22%). Likely because too few calibration drives make the alarm line unreliable (not proven).
   The "2nd run" rows come from one run together, so compare them with each other.
 - **Realistic air faults: kept in the test.** They are caught far more often (45-60% of drives) than the sensor-only
   versions (5-40%), so in a real car these faults would mostly be visible through the fuel trim.
