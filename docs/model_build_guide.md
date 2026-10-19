@@ -251,7 +251,7 @@ MAF 15% low (sensor only) 1/5 · MAP +8 kPa (sensor only) 0/2 · clean drives 12
 
 ## Step 10: The fixes we tested, and how much better the model got 
 
-After the first version, five fixes were tested. **Both tests were re-run on exactly the same cars, drives and faults**
+After the first version, six fixes were tested. **Both tests were re-run on exactly the same cars, drives and faults**
 for every combination, so the numbers compare fairly.
 
 1. **Two-speed alarm:** a second, slow score averaged over 10 minutes, to catch creeping faults.
@@ -262,6 +262,9 @@ for every combination, so the numbers compare fairly.
 5. **Bias score (issue #33):** the signed prediction error (prediction − reading) of each sensor, standardized on the car's
    calibration drives and added up through the drive with a two-sided CUSUM (allowance k per window), so a steady offset
    or drift keeps growing while noise cancels out. Run as scoring "stuck check + bias".
+6. **Air-sensor bias score (issue #33, second try):** the bias score from item 5, but only on the air-path sensors
+   (MAF, MAP, load, short-term fuel trim), with its alarm line set from calibration scores where each calibration drive
+   is judged by the other calibration drives (leave-one-out). Run as scoring "stuck check + bias".
 
 | Configuration | Main AUROC | Main F1 (drive) | Main false alarms | Synthetic F1 (drive) | Synthetic false alarms |
 |---|---|---|---|---|---|
@@ -273,6 +276,8 @@ for every combination, so the numbers compare fairly.
 | + all: physics + two-speed + stuck check | 0.82 | 0.63 | 11% | 0.62 | 15% |
 | stuck check (issue #33 run) | 0.80 | 0.75 | 9% | 0.81 | 20% |
 | + bias score (issue #33 run) | 0.73 | 0.73 | 35% | 0.86 | 20% |
+| stuck check (issue #33, 2nd run) | 0.80 | 0.75 | 9% | 0.81 | 20% |
+| + air-sensor bias score (issue #33, 2nd run) | 0.81 | 0.80 | 17% | 0.85 | 27% |
 
 - **Stuck check: kept.** Stuck coolant caught in 78% of drives instead of 44% (main test) and 3/3 instead of 1/3
   (synthetic), with only a small rise in false alarms. Best overall on both tests.
@@ -287,6 +292,13 @@ for every combination, so the numbers compare fairly.
   proven): the alarm line is set from calibration drives, where the bias score is near zero most of the time; test drives
   come later, so a small steady healthy error between the model and the car adds up and normal later drives cross the line.
   The two "issue #33 run" rows were measured together in a separate run, so compare them with each other, not with the rows above.
+- **Air-sensor bias score (issue #33): not adopted.** Tried because a diagnostic showed healthy drives carry their own steady
+  errors, mostly on sensors other than the air path, and calibration offsets do not transfer between drives (as Berton,
+  Frisk & Nyberg (2004) found for a truck engine air path). It improves F1 (main 0.75 → 0.80, synthetic 0.81 → 0.85) and
+  catches more steady air faults (MAP +10 kPa 9% → 67% of drives, MAF drift 29% → 52%). It is not adopted because
+  false alarms per drive still rise (main 9% → 17%, synthetic 20% → 27%), above the 3-point limit, and MAF drift AUROC
+  barely moves (0.61 → 0.62). Most of the extra false alarms come from cars with few calibration drives (car4 has 2).
+  The "2nd run" rows come from one run together, so compare them with each other.
 - **Realistic air faults: kept in the test.** They are caught far more often (45-60% of drives) than the sensor-only
   versions (5-40%), so in a real car these faults would mostly be visible through the fuel trim.
 
