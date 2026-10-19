@@ -277,7 +277,7 @@ for every combination, so the numbers compare fairly.
 | stuck check (issue #33 run) | 0.80 | 0.75 | 9% | 0.81 | 20% |
 | + bias score (issue #33 run) | 0.73 | 0.73 | 35% | 0.86 | 20% |
 | stuck check (issue #33, 2nd run) | 0.80 | 0.75 | 9% | 0.81 | 20% |
-| + air-sensor bias score (issue #33, 2nd run) | 0.81 | 0.80 | 17% | 0.85 | 27% |
+| + air-sensor bias score (issue #33, 2nd run) | 0.81 | 0.80 | 12% | 0.85 | 27% |
 
 - **Stuck check: kept.** Stuck coolant caught in 78% of drives instead of 44% (main test) and 3/3 instead of 1/3
   (synthetic), with only a small rise in false alarms. Best overall on both tests.
@@ -295,11 +295,13 @@ for every combination, so the numbers compare fairly.
 - **Air-sensor bias score (issue #33): not adopted.** Tried because a diagnostic showed healthy drives carry their own steady
   errors, mostly on sensors other than the air path, and calibration offsets do not transfer between drives (as Berton,
   Frisk & Nyberg (2004) found for a truck engine air path). It improves F1 (main 0.75 → 0.80, synthetic 0.81 → 0.85) and
-  catches more steady air faults (MAP +10 kPa 9% → 67% of drives, MAF drift 29% → 52%). It is not adopted because
-  false alarms per drive still rise (main 9% → 17%, synthetic 20% → 27%), more than the 3 percentage points of extra false
-  alarms we allow for a fix to be adopted, and MAF drift AUROC barely moves (0.61 with stuck check alone → 0.62).
-  Most of the extra false alarms are concentrated in a few cars: car4 (81% of minutes, with only 2 calibration drives),
-  car11 (30%), car12 (22%). Likely because too few calibration drives make the alarm line unreliable (not proven).
+  catches more steady air faults (MAP +10 kPa 9% → 66% of drives, MAF drift 29% → 48%). It is not adopted because
+  false alarms per drive rise on the synthetic test (20% → 27%, more than the 3 percentage points of extra false
+  alarms we allow for a fix to be adopted; main 9% → 12%, per minute 12% → 21%), and MAF drift AUROC barely moves (0.61 with
+  stuck check alone → 0.62). The worst cars for false alarms per minute are car4 (71%, with only 2 calibration drives),
+  exp2_car (29%) and car12 (22%, 4 calibration drives). Likely because too few calibration drives make the alarm line
+  unreliable (not proven): with very few calibration drives, each leave-one-out fit learns from one or two drives, which
+  can make the line unreliable.
   The "2nd run" rows come from one run together, so compare them with each other.
 - **Realistic air faults: kept in the test.** They are caught far more often (45-60% of drives) than the sensor-only
   versions (5-40%), so in a real car these faults would mostly be visible through the fuel trim.
