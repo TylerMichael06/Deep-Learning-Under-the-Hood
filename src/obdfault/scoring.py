@@ -90,25 +90,30 @@ def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True, B_cal=None):   #
        (1) the usual 2-minute score, (2) a slow 10-minute score (catches creeping drift), and
        (3) a stuck check: minutes a slow sensor has been frozen ÷ the longest freeze seen on this car's calibration drives,
        (4) EXPERIMENT (issue #33), only if B_cal (calibration signed errors) is given: the bias score (bias_scorer).
-    Each part is rescaled on calibration data so they share one alarm line. Returns score(E, D, trips, B) and calibration scores."""
+    Each part is rescaled on calibration data so they share one alarm line. With B_cal, the calibration scores mix in-sample
+    fast/slow/stuck parts with the leave-one-out bias part (only the bias score showed in-sample optimism). Returns score(E, D, trips, B) and calibration scores."""
     fast, fast_cal = calibrate(E_cal, Dcal["trip"], a.smooth)
     slow, slow_cal = calibrate(E_cal, Dcal["trip"], a.smooth_long)
     warm = (Dcal["start"] + W) * DT / 60 >= a.grace
     longest = np.maximum(flat_minutes(cal_trips, Dcal).max(0), a.min_flat)
     if B_cal is not None: bias, bias_cal = bias_scorer(B_cal, Dcal, a.cusum_k, a.grace)
-    def score(E, D, trips, B=None):
+    def base(E, D, trips):
         (s, who), (l, who_l) = fast(E, D["trip"]), slow(E, D["trip"])
         ns, nl = unit_scale(fast_cal[warm], s), unit_scale(slow_cal[warm], l)
         if not use_slow: nl = np.full_like(nl, -np.inf)                            # stuck check only
         f = flat_minutes(trips, D) / longest; nf = f.max(1)
         who = np.where(nl > ns, who_l, who)
         who = np.where(nf > np.maximum(ns, nl), np.array([CH.index(c) for c in FLAT_SENSORS])[f.argmax(1)], who)
-        sc = np.maximum.reduce([ns, nl, nf])
+        return np.maximum.reduce([ns, nl, nf]), who
+    def score(E, D, trips, B=None):
+        sc, who = base(E, D, trips)
         if B_cal is not None:                                                      # + bias score
             b, who_b = bias(B, D); nb = unit_scale(bias_cal[warm], b)
             who = np.where(nb > sc, who_b, who); sc = np.maximum(sc, nb)
         return sc, who
-    return score, score(E_cal, Dcal, cal_trips, B_cal)[0]
+    if B_cal is None: return score, score(E_cal, Dcal, cal_trips)[0]
+    # the bias part of the calibration scores is leave-one-out, so the alarm line reflects drives the bias fit has not seen
+    return score, np.maximum(base(E_cal, Dcal, cal_trips)[0], unit_scale(bias_cal[warm], bias_cal))
 
 def auroc(y, s):
     return roc_auc_score(y, s) if 0 < y.sum() < len(y) else np.nan

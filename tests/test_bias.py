@@ -108,3 +108,18 @@ def test_bias_scorer_waits_for_the_warm_up():
     score, _ = bias_scorer(B, D, k=0.5, grace=5)
     s, who = score(B, D); early = D["start"] < 48               # window ends before minute 5: (start + 12) * 5 s < 300 s
     assert (s[early] == 0).all() and (who[early] == -1).all() and s[~early].max() > 0
+
+
+def test_slow_stuck_scorer_alarm_line_uses_leave_one_out_bias_scores():
+    from synthdata import EVAL_ARGS
+    from obdfault.scoring import slow_stuck_scorer, unit_scale
+    from obdfault.config import DT, W
+    PHYSICS.clear(); torch.manual_seed(0)
+    trips = make_trips(n_cars=1, n_trips=3)
+    allX = np.concatenate([t["X"] for t in trips]); mu, sd = np.nanmean(allX, 0), np.nanstd(allX, 0) + 1e-6
+    D = windows(trips, mu, sd, stride=2); E, B = channel_errors(VirtualSensorNet(), D, signed=True)
+    _, s_plain = slow_stuck_scorer(E, D, trips, EVAL_ARGS, use_slow=False)
+    _, s_bias = slow_stuck_scorer(E, D, trips, EVAL_ARGS, use_slow=False, B_cal=B)
+    _, loo = bias_scorer(B, D, EVAL_ARGS.cusum_k, EVAL_ARGS.grace)
+    warm = (D["start"] + W) * DT / 60 >= EVAL_ARGS.grace
+    assert np.allclose(s_bias, np.maximum(s_plain, unit_scale(loo[warm], loo)))
