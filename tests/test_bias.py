@@ -58,6 +58,12 @@ def test_cusum_skips_missing_values():
     assert np.isclose(out[0], 0.5) and np.isnan(out[1]) and np.isclose(out[2], 1.0)
 
 
+from obdfault.config import CH
+from obdfault.scoring import BIAS_SENSORS
+
+MAF, IAT = CH.index("MAF"), CH.index("IAT")
+
+
 def _two_drives(n=200):
     starts = np.arange(0, n, 2)[: n // 2]                       # one window every 10 s, as windows(stride=2) makes them
     return dict(trip=np.repeat([0, 1], n // 2), start=np.r_[starts, starts])
@@ -65,17 +71,40 @@ def _two_drives(n=200):
 
 def test_bias_scorer_flags_an_offset_and_blames_its_sensor():
     rng, D = np.random.RandomState(0), _two_drives()
-    B_cal = rng.normal(0.3, 1, (200, 2))                        # this car's model is always 0.3 off: calibrated away
+    B_cal = rng.normal(0.3, 1, (200, len(CH)))                  # this car's model is always 0.3 off: calibrated away
     score, s_cal = bias_scorer(B_cal, D, k=0.5, grace=0)
-    clean = rng.normal(0.3, 1, (200, 2)); faulty = clean.copy(); faulty[:, 1] += 1.5
+    clean = rng.normal(0.3, 1, (200, len(CH))); faulty = clean.copy(); faulty[:, MAF] += 1.5
     s_clean, _ = score(clean, D); s_fault, who = score(faulty, D)
     assert s_cal.shape == (200,) and s_clean.max() < 10
     assert s_fault.max() > 5 * s_clean.max()
-    assert who[D["trip"] == 0][-1] == 1
+    assert who[D["trip"] == 0][-1] == MAF
+
+
+def test_bias_scorer_only_watches_the_air_sensors():
+    assert BIAS_SENSORS == ["MAF", "MAP", "LOAD", "STFT1"]
+    rng, D = np.random.RandomState(0), _two_drives()
+    score, _ = bias_scorer(rng.normal(0, 1, (200, len(CH))), D, k=0.5, grace=0)
+    clean = rng.normal(0, 1, (200, len(CH))); hot = clean.copy(); hot[:, IAT] += 3     # intake temp is not an air-path sensor
+    s_clean, _ = score(clean, D); s_hot, who = score(hot, D)
+    assert np.allclose(s_hot, s_clean) and (who != IAT).all()
+
+
+def test_bias_scorer_calibration_scores_are_leave_one_drive_out():
+    D = dict(trip=np.repeat([0, 1, 2], 100), start=np.tile(np.arange(0, 200, 2), 3))
+    B = np.random.RandomState(0).normal(0, 1, (300, len(CH))); B[D["trip"] == 2, MAF] += 1.0   # one drive with its own offset
+    score, s_cal = bias_scorer(B, D, k=0.5, grace=0)
+    in_sample, _ = score(B, D); last = D["trip"] == 2
+    assert s_cal[last].max() > 2 * in_sample[last].max()     # judged by the other drives, the offset stands out
+
+
+def test_bias_scorer_with_one_calibration_drive_scores_in_sample():
+    D = dict(trip=np.zeros(100, int), start=np.arange(0, 200, 2)); B = np.random.RandomState(0).normal(0, 1, (100, len(CH)))
+    score, s_cal = bias_scorer(B, D, k=0.5, grace=0)
+    assert np.allclose(s_cal, score(B, D)[0])
 
 
 def test_bias_scorer_waits_for_the_warm_up():
-    D = _two_drives(); B = np.random.RandomState(0).normal(0, 1, (200, 2)); B[:, 1] += 3
+    D = _two_drives(); B = np.random.RandomState(0).normal(0, 1, (200, len(CH))); B[:, MAF] += 3
     score, _ = bias_scorer(B, D, k=0.5, grace=5)
     s, who = score(B, D); early = D["start"] < 48               # window ends before minute 5: (start + 12) * 5 s < 300 s
-    assert (s[early] == 0).all() and (who[early] == -1).all()
+    assert (s[early] == 0).all() and (who[early] == -1).all() and s[~early].max() > 0

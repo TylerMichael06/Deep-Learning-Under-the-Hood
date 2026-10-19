@@ -57,19 +57,33 @@ def cusum(z, k):
         out[i, ok] = np.maximum(up, down)[ok]
     return out
 
+BIAS_SENSORS = ["MAF", "MAP", "LOAD", "STFT1"]   # air-path sensors the bias score watches; others drift when healthy
+
 def bias_scorer(B_cal, Dcal, k, grace):
-    """Signed-error (bias) score. On this car's calibration windows after the warm-up, learn each sensor's usual signed
-    error (mean, std) -> z-score; then run a two-sided CUSUM per drive, starting after `grace` minutes.
-    Window score = worst sensor's total (0 if no sensor has a value). Returns score(B, D) and the calibration scores."""
+    """Signed-error (bias) score on the air-path sensors (BIAS_SENSORS). On this car's calibration windows after the warm-up,
+    learn each sensor's usual signed error (mean, std) -> z-score; then run a two-sided CUSUM per drive, starting after
+    `grace` minutes. Window score = worst air sensor's total (0 if none has a value).
+    Returns score(B, D), standardized with all calibration drives, and the calibration scores, where each calibration drive
+    is scored with the mean/std of the OTHER calibration drives (leave-one-out; in-sample if there is only one), so the
+    alarm line reflects how the score behaves on drives it was not fitted on."""
     warm = lambda D: (D["start"] + W) * DT / 60 >= grace
-    Bw = B_cal[warm(Dcal)]; ok = (~np.isnan(Bw)).sum(0) >= 10      # sensors seen enough to calibrate
-    m = np.where(ok, np.nanmean(np.where(ok, Bw, 0), 0), np.nan); s = np.where(ok, np.nanstd(np.where(ok, Bw, 0), 0) + 1e-6, np.nan)
-    def score(B, D):
-        Z = np.where(warm(D)[:, None], (B - m) / s, np.nan); T = np.full(Z.shape, np.nan)
-        for t in np.unique(D["trip"]): i = D["trip"] == t; T[i] = cusum(Z[i], k)
-        T = np.where(np.isnan(T), -np.inf, T); sc, who = T.max(1), T.argmax(1)
-        return np.where(np.isfinite(sc), sc, 0.0), np.where(np.isfinite(sc), who, -1)
-    return score, score(B_cal, Dcal)[0]
+    air = np.isin(np.arange(len(CH)), [CH.index(c) for c in BIAS_SENSORS])
+    def fit(B, D):                                                     # air sensors seen enough to calibrate
+        Bw = np.where(air, B, np.nan)[warm(D)]; ok = (~np.isnan(Bw)).sum(0) >= 10; Bw = np.where(ok, Bw, 0)
+        return np.where(ok, np.nanmean(Bw, 0), np.nan), np.where(ok, np.nanstd(Bw, 0) + 1e-6, np.nan)
+    def scorer(m, s):
+        def score(B, D):
+            Z = np.where(warm(D)[:, None], (B - m) / s, np.nan); T = np.full(Z.shape, np.nan)
+            for t in np.unique(D["trip"]): i = D["trip"] == t; T[i] = cusum(Z[i], k)
+            T = np.where(np.isnan(T), -np.inf, T); sc, who = T.max(1), T.argmax(1)
+            return np.where(np.isfinite(sc), sc, 0.0), np.where(np.isfinite(sc), who, -1)
+        return score
+    score = scorer(*fit(B_cal, Dcal)); trips = np.unique(Dcal["trip"])
+    if len(trips) < 2: return score, score(B_cal, Dcal)[0]
+    s_cal = np.zeros(len(B_cal)); sub = lambda i: dict(trip=Dcal["trip"][i], start=Dcal["start"][i])
+    for t in trips:                                                    # leave this calibration drive out
+        i = Dcal["trip"] == t; s_cal[i] = scorer(*fit(B_cal[~i], sub(~i)))(B_cal[i], sub(i))[0]
+    return score, s_cal
 
 def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True, B_cal=None):   # final model: use_slow=False, B_cal=None ("stuck check")
     """Fixes for slow faults. Score = the largest of
