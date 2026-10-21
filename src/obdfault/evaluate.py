@@ -40,7 +40,7 @@ from .config import CH, DT, W, FAULTY_CARS, FINAL_SCORING, KAGGLE_DATA, RESULTS,
 from .data import load_kaggle, load_ved
 from .features import PHYSICS, windows
 from .model import resolve_device, channel_errors, ridge_errors
-from .scoring import calibrate, slow_stuck_scorer, auroc
+from .scoring import calibrate, slow_stuck_scorer, auroc, confirm, confirm_bias
 from .faults import ALL_FAULTS, inject
 from .train import prepare_car, save_final
 
@@ -49,9 +49,10 @@ def evaluate_car(unit, trips, a):
     if P is None: return None, None
     base, tuned, mu, sd, Dtr, Dcal, Dclean, test_trips = (P[k] for k in ("base", "tuned", "mu", "sd", "Dtr", "Dcal", "Dclean", "test_trips"))
     has = Dclean["m"].numpy().mean(0) > 0.5
-    methods = {"pretrained only": lambda Ds: [channel_errors(base, d, signed=True) for d in Ds],
-               "fine-tuned (ours)": lambda Ds: [channel_errors(tuned, d, signed=True) for d in Ds],
-               "ridge baseline": lambda Ds: ridge_errors(Dtr, Ds, signed=True)}
+    scale = (mu, sd)                                    # MAF's signed error as a share of predicted airflow (bias score)
+    methods = {"pretrained only": lambda Ds: [channel_errors(base, d, signed=True, scale=scale) for d in Ds],
+               "fine-tuned (ours)": lambda Ds: [channel_errors(tuned, d, signed=True, scale=scale) for d in Ds],
+               "ridge baseline": lambda Ds: ridge_errors(Dtr, Ds, signed=True, scale=scale)}
     fault_trips = {f: inject(test_trips, f) for f in ALL_FAULTS if has[CH.index(ALL_FAULTS[f][0])]}
     fault_sets = {f: windows(t, mu, sd, stride=2) for f, t in fault_trips.items()}
     # warm-up grace: minutes before `a.grace` never raise an alarm and are not used to set the cutoff (cold starts)
@@ -70,9 +71,13 @@ def evaluate_car(unit, trips, a):
                 score, s_cal = slow_stuck_scorer(Es[0], Dcal, P["cal_trips"], a, use_slow=scoring == "two-speed + stuck check",
                                                  B_cal=Bs[0] if scoring == "stuck check + bias" else None)
             s_clean, _ = score(Es[1], Dclean, test_trips, Bs[1])
+            # regular part = the score without the bias part (same as the score for scorings without one), for confirm_bias
+            regular = (lambda E, D_, trips_: score(E, D_, trips_)[0]) if scoring == "stuck check + bias" else None
+            r_clean = regular(Es[1], Dclean, test_trips) if regular else s_clean
             real = auroc(Dclean["code"].astype(int), s_clean) if Dclean["code"].any() else np.nan
             scored = [(f, Df, *score(E, Df, fault_trips[f], B), minute(Df) >= a.grace)
                       for (f, Df), E, B in zip(fault_sets.items(), Es[2:], Bs[2:])]
+            r_faults = [regular(E, Df, fault_trips[f]) if regular else s_f for (f, Df, s_f, _, _), E in zip(scored, Es[2:])]
             # Only judged data is scored: minutes after the warm-up, and drives with at least a.min_judge windows
             # (1 minute) after the warm-up. Shorter drives are "too short to judge" and counted separately.
             warm_c, trip_c = warm_clean[clean_ok], Dclean["trip"][clean_ok]
@@ -87,12 +92,18 @@ def evaluate_car(unit, trips, a):
                                  clean_drives_judged=int(judged_c.sum()), clean_drives_too_short=int((~judged_c).sum()),
                                  real_code_windows=int(Dclean["code"].sum()), real_code_AUROC=real))
                 clean_trip_hit = pd.Series(fc).groupby(trip_c).mean()[judged_c]
-                for f, Df, s_f, who, warm_f in scored:
+                clean_trip_reg = pd.Series((r_clean[clean_ok] > thr) & warm_c).groupby(trip_c).mean()[judged_c]
+                for (f, Df, s_f, who, warm_f), r_f in zip(scored, r_faults):
                     ch = CH.index(ALL_FAULTS[f][0]); ff = (s_f > thr) & warm_f          # FAULT calls on faulty minutes
                     y = np.r_[np.zeros(clean_ok.sum()), np.ones(len(s_f))]
                     judged_f = pd.Series(warm_f).groupby(Df["trip"]).sum() >= a.min_judge
                     trip_hit = pd.Series(ff).groupby(Df["trip"]).mean()[judged_f]   # share of each drive's minutes flagged
+                    trip_reg = pd.Series((r_f > thr) & warm_f).groupby(Df["trip"]).mean()[judged_f]
                     for rule in a.drive_rules:        # a whole drive is FAULT if more than `rule` of its minutes are flagged
+                        # EXPERIMENT (issue #33), drives in driving order: bias-only alarms confirmed on 2 of the last 3 drives
+                        # (confirm_bias), and, reported only, every alarm confirmed that way (confirm)
+                        scoped_f, scoped_c = confirm_bias(trip_reg > rule, trip_hit > rule), confirm_bias(clean_trip_reg > rule, clean_trip_hit > rule)
+                        conf_f, conf_c = confirm(trip_hit > rule), confirm(clean_trip_hit > rule)
                         rows.append(dict(car=unit, method=name, scoring=scoring, cutoff=q, grace_min=a.grace, drive_rule=rule,
                                          fault=f, sensor=ALL_FAULTS[f][0], AUROC=auroc(y, np.r_[s_clean[clean_ok], s_f]),
                                          window_detection=ff[warm_f].mean(), drive_detection=(trip_hit > rule).mean(),
@@ -102,7 +113,11 @@ def evaluate_car(unit, trips, a):
                                          TP=int(ff.sum()), FN=int((~ff & warm_f).sum()), FP=int(fc.sum()), TN=int((~fc & warm_c).sum()),
                                          drive_TP=int((trip_hit > rule).sum()), drive_FN=int((trip_hit <= rule).sum()),
                                          drive_FP=int((clean_trip_hit > rule).sum()), drive_TN=int((clean_trip_hit <= rule).sum()),
-                                         drives_too_short=int((~judged_f).sum())))
+                                         drives_too_short=int((~judged_f).sum()), scoped_detection=scoped_f.mean(),
+                                         scoped_TP=int(scoped_f.sum()), scoped_FN=int((~scoped_f).sum()),
+                                         scoped_FP=int(scoped_c.sum()), scoped_TN=int((~scoped_c).sum()), confirmed_detection=conf_f.mean(),
+                                         confirmed_TP=int(conf_f.sum()), confirmed_FN=int((~conf_f).sum()),
+                                         confirmed_FP=int(conf_c.sum()), confirmed_TN=int((~conf_c).sum())))
     return pd.DataFrame(rows), pd.DataFrame(summ)
 
 TAG = ""   # added to output file names (set by --tag, e.g. "_physics")
@@ -129,6 +144,9 @@ def binary_report(R):
     for k, g in R.groupby(keys + ["drive_rule"]):
         out.append(dict(zip(keys, k[:3]), level=f"drive (>{k[3]:.0%} of minutes)",
                         **metrics(*g[["drive_TP", "drive_FN", "drive_FP", "drive_TN"]].sum().to_numpy())))
+        for col, lab in (("scoped", "bias alarms confirmed"), ("confirmed", "all alarms confirmed (reported only)")):   # EXPERIMENT, #33
+            out.append(dict(zip(keys, k[:3]), level=f"drive (>{k[3]:.0%}), {lab} on 2 of last 3 drives",
+                            **metrics(*g[[f"{col}_TP", f"{col}_FN", f"{col}_FP", f"{col}_TN"]].sum().to_numpy())))
     return pd.DataFrame(out).sort_values(keys + ["level"]).reset_index(drop=True)
 
 # =================================== MAIN ======================================

@@ -165,3 +165,17 @@ def test_slow_stuck_scorer_without_signed_errors_gives_the_regular_part():
     withb, _ = slow_stuck_scorer(E, D, trips, args, use_slow=False, B_cal=B)
     assert np.array_equal(withb(E, D, trips)[0], plain(E, D, trips)[0])
     assert (withb(E, D, trips, B)[0] >= plain(E, D, trips)[0]).all()
+
+
+from obdfault.scoring import confirm, confirm_bias
+
+
+def test_confirm_needs_two_of_the_last_three_drives():
+    assert confirm([1, 0, 1, 1, 0]).tolist() == [False, False, True, True, False]
+    assert confirm([1]).tolist() == [False]                    # the first drive is only "pending"
+    assert confirm([1, 0, 0, 1]).tolist() == [False, False, False, False]
+
+
+def test_confirm_bias_only_delays_alarms_the_regular_score_did_not_raise():
+    regular = [0, 1, 0, 0, 0]; combined = [1, 1, 0, 1, 0]       # drive 2: regular score; drives 1 and 4: bias score only
+    assert confirm_bias(regular, combined).tolist() == [False, True, False, True, False]

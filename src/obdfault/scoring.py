@@ -117,5 +117,19 @@ def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True, B_cal=None):   #
     # the bias part of the calibration scores is leave-one-out, so the alarm line reflects drives the bias fit has not seen
     return score, np.maximum(base(E_cal, Dcal, cal_trips)[0], unit_scale(bias_cal[warm], bias_cal))
 
+def confirm(flags, n=3, k=2):
+    """EXPERIMENT (issue #33): OBD-II-style confirmation across drives. flags: one FAULT/HEALTHY verdict per judged drive,
+    in driving order. A drive is confirmed FAULT only if it is FAULT and at least k of the last n drives (itself included)
+    were FAULT, like a car's pending code that lights the check-engine lamp only when the fault comes back."""
+    f = np.asarray(flags, bool)
+    return f & (np.convolve(f, np.ones(n, int))[:len(f)] >= k)
+
+def confirm_bias(regular, combined):
+    """EXPERIMENT (issue #33): per-drive verdicts in driving order. A drive the regular score flags (regular) is FAULT at
+    once, as before; a drive that is FAULT only with the bias score added (combined) must be confirmed on 2 of the last 3
+    drives (confirm), because the bias score catches slow faults that persist from drive to drive."""
+    regular, combined = np.asarray(regular, bool), np.asarray(combined, bool)
+    return regular | confirm(combined)
+
 def auroc(y, s):
     return roc_auc_score(y, s) if 0 < y.sum() < len(y) else np.nan
