@@ -36,8 +36,8 @@ Writes obd_results_faults.csv, obd_results_summary.csv, obd_results_binary.csv t
 """
 import argparse, os, time
 import numpy as np, pandas as pd
-from .config import CH, DT, W, FAULTY_CARS, FINAL_SCORING, KAGGLE_DATA, RESULTS, add_ltft
-from .data import load_kaggle, load_ved
+from .config import CH, DT, W, DATA, FAULTY_CARS, FINAL_SCORING, KAGGLE_DATA, RESULTS, add_ltft
+from .data import load_kaggle, load_ved, load_kit
 from .features import PHYSICS, windows
 from .model import resolve_device, channel_errors, ridge_errors
 from .scoring import calibrate, slow_stuck_scorer, auroc, confirm, confirm_bias
@@ -178,6 +178,8 @@ def main():
     ap.add_argument("--ved-pretrain", type=int, default=60, help="VED gasoline cars added to pretraining")
     ap.add_argument("--ved-test", type=int, default=4, help="VED cars held out as extra test cars (never pretrained on)")
     ap.add_argument("--ltft", action="store_true", help="experiment: add long-term fuel trim (bank 1) as a 10th sensor")
+    ap.add_argument("--kit", action="store_true",
+                    help="experiment (issue #33): add the KIT car (data/public/kit-obd2, 81 drives) as an extra held-out test car")
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--device", choices=["cpu", "mps", "cuda", "auto"], default="cpu",
                     help="Transformer backend (default: cpu; auto prefers CUDA, then MPS, then CPU)")
@@ -195,6 +197,9 @@ def main():
     if a.ved:
         ved = load_ved(a.ved, a.ved_pretrain, a.ved_test); trips += ved
         if not a.cars: cars += sorted({t["unit"] for t in ved if t["test_only"]})
+    if a.kit:
+        kit = load_kit(os.path.join(DATA, "public", "kit-obd2", "OBD-II-Dataset.zip")); trips += kit
+        if not a.cars: cars.append(kit[0]["unit"])
     if a.quick and not a.cars: cars = cars[:1] + [c for c in cars if c.startswith("ved")][:1]
     if a.final_only: return save_final(trips, a, t0)
     all_rows, all_summ = [], []
