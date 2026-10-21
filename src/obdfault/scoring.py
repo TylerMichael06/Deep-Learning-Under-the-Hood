@@ -57,15 +57,16 @@ def cusum(z, k):
         out[i, ok] = np.maximum(up, down)[ok]
     return out
 
-BIAS_SENSORS = ["MAF", "MAP", "LOAD", "STFT1"]   # air-path sensors the bias score watches; others drift when healthy
+BIAS_SENSORS = ["MAF", "MAP", "LOAD"]   # air-path sensors the bias score watches; others (fuel trim too) shift between healthy drives
+MIN_BIAS_DRIVES = 3                      # fewer calibration drives can't show how much healthy drives differ: bias score off
 
 def bias_scorer(B_cal, Dcal, k, grace):
     """Signed-error (bias) score on the air-path sensors (BIAS_SENSORS). On this car's calibration windows after the warm-up,
     learn each sensor's usual signed error (mean, std) -> z-score; then run a two-sided CUSUM per drive, starting after
     `grace` minutes. Window score = worst air sensor's total (0 if none has a value).
     Returns score(B, D), standardized with all calibration drives, and the calibration scores, where each calibration drive
-    is scored with the mean/std of the OTHER calibration drives (leave-one-out; in-sample if there is only one), so the
-    alarm line reflects how the score behaves on drives it was not fitted on."""
+    is scored with the mean/std of the OTHER calibration drives (leave-one-out), so the alarm line reflects how the score
+    behaves on drives it was not fitted on. With fewer than MIN_BIAS_DRIVES calibration drives returns (None, None): no bias score."""
     warm = lambda D: (D["start"] + W) * DT / 60 >= grace
     air = np.isin(np.arange(len(CH)), [CH.index(c) for c in BIAS_SENSORS])
     def fit(B, D):                                                     # air sensors seen enough to calibrate
@@ -78,8 +79,9 @@ def bias_scorer(B_cal, Dcal, k, grace):
             T = np.where(np.isnan(T), -np.inf, T); sc, who = T.max(1), T.argmax(1)
             return np.where(np.isfinite(sc), sc, 0.0), np.where(np.isfinite(sc), who, -1)
         return score
-    score = scorer(*fit(B_cal, Dcal)); trips = np.unique(Dcal["trip"])
-    if len(trips) < 2: return score, score(B_cal, Dcal)[0]
+    trips = np.unique(Dcal["trip"])
+    if len(trips) < MIN_BIAS_DRIVES: return None, None
+    score = scorer(*fit(B_cal, Dcal))
     s_cal = np.zeros(len(B_cal)); sub = lambda i: dict(trip=Dcal["trip"][i], start=Dcal["start"][i])
     for t in trips:                                                    # leave this calibration drive out
         i = Dcal["trip"] == t; s_cal[i] = scorer(*fit(B_cal[~i], sub(~i)))(B_cal[i], sub(i))[0]
@@ -91,12 +93,12 @@ def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True, B_cal=None):   #
        (3) a stuck check: minutes a slow sensor has been frozen ÷ the longest freeze seen on this car's calibration drives,
        (4) EXPERIMENT (issue #33), only if B_cal (calibration signed errors) is given: the bias score (bias_scorer).
     Each part is rescaled on calibration data so they share one alarm line. With B_cal, the calibration scores mix in-sample
-    fast/slow/stuck parts with the leave-one-out bias part (only the bias score showed in-sample optimism). Returns score(E, D, trips, B) and calibration scores."""
+    fast/slow/stuck parts with the leave-one-out bias part (only the bias score showed in-sample optimism). Returns score(E, D, trips, B) and calibration scores; score(E, D, trips) without B gives the parts other than the bias score."""
     fast, fast_cal = calibrate(E_cal, Dcal["trip"], a.smooth)
     slow, slow_cal = calibrate(E_cal, Dcal["trip"], a.smooth_long)
     warm = (Dcal["start"] + W) * DT / 60 >= a.grace
     longest = np.maximum(flat_minutes(cal_trips, Dcal).max(0), a.min_flat)
-    if B_cal is not None: bias, bias_cal = bias_scorer(B_cal, Dcal, a.cusum_k, a.grace)
+    bias, bias_cal = bias_scorer(B_cal, Dcal, a.cusum_k, a.grace) if B_cal is not None else (None, None)
     def base(E, D, trips):
         (s, who), (l, who_l) = fast(E, D["trip"]), slow(E, D["trip"])
         ns, nl = unit_scale(fast_cal[warm], s), unit_scale(slow_cal[warm], l)
@@ -107,11 +109,11 @@ def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True, B_cal=None):   #
         return np.maximum.reduce([ns, nl, nf]), who
     def score(E, D, trips, B=None):
         sc, who = base(E, D, trips)
-        if B_cal is not None:                                                      # + bias score
+        if bias is not None and B is not None:                                     # + bias score (without B: regular part only)
             b, who_b = bias(B, D); nb = unit_scale(bias_cal[warm], b)
             who = np.where(nb > sc, who_b, who); sc = np.maximum(sc, nb)
         return sc, who
-    if B_cal is None: return score, score(E_cal, Dcal, cal_trips)[0]
+    if bias is None: return score, score(E_cal, Dcal, cal_trips)[0]
     # the bias part of the calibration scores is leave-one-out, so the alarm line reflects drives the bias fit has not seen
     return score, np.maximum(base(E_cal, Dcal, cal_trips)[0], unit_scale(bias_cal[warm], bias_cal))
 
