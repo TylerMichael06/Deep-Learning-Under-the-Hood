@@ -3,7 +3,7 @@ import os, time
 import numpy as np, torch
 from .config import CH, DT, W, FAULTY_CARS, FINAL_SCORING, MODELS
 from .features import PHYSICS, full, windows, subset
-from .model import VirtualSensorNet, fit
+from .model import VirtualSensorNet, fit, resolve_device
 
 # ====================== STEP 6: EVALUATE ONE HELD-OUT CAR ======================
 def prepare_car(unit, trips, a):
@@ -16,7 +16,8 @@ def prepare_car(unit, trips, a):
     if len(mine) < 3: return None
     # --- pretrain
     D = windows(pre, mu, sd, stride=2); n = len(D["x"]); perm = np.random.RandomState(0).permutation(n)
-    base = fit(VirtualSensorNet(), D, perm[: int(.9 * n)], perm[int(.9 * n):], a.epochs, 1e-3)
+    device = resolve_device(getattr(a, "device", "cpu"))
+    base = fit(VirtualSensorNet().to(device), D, perm[: int(.9 * n)], perm[int(.9 * n):], a.epochs, 1e-3)
     # --- this car, in time order: first 40% of drive time fine-tunes, next 20% (other drives) sets the
     #     thresholds, last 40% is the test. Nothing from the test drives is used before scoring.
     lens = np.cumsum([len(t["X"]) for t in mine])
@@ -28,7 +29,7 @@ def prepare_car(unit, trips, a):
     if len(Dft["x"]) < 50 or len(Dcal["x"]) < 20: return None
     k = int(.85 * len(Dft["x"]))                                                  # early-stopping slice of the fine-tune data
     Dtr = subset(Dft, np.arange(k))
-    tuned = VirtualSensorNet(); tuned.load_state_dict(base.state_dict())
+    tuned = VirtualSensorNet().to(device); tuned.load_state_dict(base.state_dict())
     tuned = fit(tuned, Dft, np.arange(k), np.arange(k, len(Dft["x"])), a.ft_epochs, 3e-4)
     return dict(base=base, tuned=tuned, mu=mu, sd=sd, Dtr=Dtr, Dcal=Dcal, Dclean=Dclean, test_trips=test_trips, cal_trips=cal_trips)
 
@@ -37,8 +38,9 @@ def save_final(trips, a, t0):
     pre = [t for t in trips if t["unit"] not in FAULTY_CARS and not t.get("test_only")]
     allX = np.concatenate([full(t["X"]) for t in pre]); mu, sd = np.nanmean(allX, 0), np.nanstd(allX, 0) + 1e-6
     D = windows(pre, mu, sd, stride=2); n = len(D["x"]); perm = np.random.RandomState(0).permutation(n)
-    final = fit(VirtualSensorNet(), D, perm[: int(.9 * n)], perm[int(.9 * n):], a.epochs, 1e-3)
-    torch.save(dict(state_dict=final.state_dict(), channels=CH, physics=[p[0] for p in PHYSICS], mu=mu, sd=sd, dt_seconds=DT, window=W,
+    device = resolve_device(getattr(a, "device", "cpu"))
+    final = fit(VirtualSensorNet().to(device), D, perm[: int(.9 * n)], perm[int(.9 * n):], a.epochs, 1e-3)
+    torch.save(dict(state_dict={k: v.cpu() for k, v in final.state_dict().items()}, channels=CH, physics=[p[0] for p in PHYSICS], mu=mu, sd=sd, dt_seconds=DT, window=W,
                     settings=dict(scoring=FINAL_SCORING, cutoff=a.cutoffs[0], min_judge_windows=a.min_judge, grace_min=a.grace, drive_rule=0.3, smooth=a.smooth, min_flat=a.min_flat)),
                os.path.join(MODELS, "obd_pretrained.pt"))
     print(f"\nsaved obd_pretrained.pt   ({time.time() - t0:.0f}s total)")
