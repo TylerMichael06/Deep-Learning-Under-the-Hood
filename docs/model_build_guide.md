@@ -251,7 +251,7 @@ MAF 15% low (sensor only) 1/5 · MAP +8 kPa (sensor only) 0/2 · clean drives 12
 
 ## Step 10: The fixes we tested, and how much better the model got 
 
-After the first version, six fixes were tested. **Both tests were re-run on exactly the same cars, drives and faults**
+After the first version, seven fixes were tested. **Both tests were re-run on exactly the same cars, drives and faults**
 for every combination, so the numbers compare fairly.
 
 1. **Two-speed alarm:** a second, slow score averaged over 10 minutes, to catch creeping faults.
@@ -265,6 +265,11 @@ for every combination, so the numbers compare fairly.
 6. **Air-sensor bias score (issue #33, second try):** the bias score from item 5, but only on the air-path sensors
    (MAF, MAP, load, short-term fuel trim), with its alarm line set from calibration scores where each calibration drive
    is judged by the other calibration drives (leave-one-out). Run as scoring "stuck check + bias".
+7. **Confirmed bias score (issue #33, third try):** the air-sensor bias score on MAF, MAP and load only (fuel trim
+   dropped), with MAF's error as a share of the predicted airflow, and switched off for cars with fewer than 3
+   calibration drives. A drive that is FAULT only because of the bias score must be FAULT on 2 of the last 3 drives
+   (like a car's "pending" trouble code that lights the lamp only when the fault comes back); every other alarm is
+   still called on the first drive. Run as scoring "stuck check + bias", level "bias alarms confirmed".
 
 | Configuration | Main AUROC | Main F1 (drive) | Main false alarms | Synthetic F1 (drive) | Synthetic false alarms |
 |---|---|---|---|---|---|
@@ -278,6 +283,8 @@ for every combination, so the numbers compare fairly.
 | + bias score (issue #33 run) | 0.73 | 0.73 | 35% | 0.86 | 20% |
 | stuck check (issue #33, 2nd run) | 0.80 | 0.75 | 9% | 0.81 | 20% |
 | + air-sensor bias score (issue #33, 2nd run) | 0.81 | 0.80 | 12% | 0.85 | 27% |
+| stuck check (issue #33, 3rd run) | 0.81 | 0.75 | 16% | 0.81 | 20% |
+| + confirmed bias score (issue #33, 3rd run) | 0.84 | 0.78 | 14% | 0.83 | 27% |
 
 - **Stuck check: kept.** Stuck coolant caught in 78% of drives instead of 44% (main test) and 3/3 instead of 1/3
   (synthetic), with only a small rise in false alarms. Best overall on both tests.
@@ -303,6 +310,25 @@ for every combination, so the numbers compare fairly.
   unreliable (not proven): with very few calibration drives, each leave-one-out fit learns from one or two drives, which
   can make the line unreliable.
   The "2nd run" rows come from one run together, so compare them with each other.
+- **Confirmed bias score (issue #33): not adopted yet.** Tried because a throwaway test on saved model errors found three
+  causes of the earlier misses and false alarms: MAF errors measured in g/s (a dirty MAF reads a fixed *share* low, so
+  the error almost vanishes at idle), fuel trim (shifts between healthy drives) and cars with 2 calibration drives. On the
+  main test it meets the bar: false alarms per drive go down (16% → 14%, 11 → 10 of 74 clean drives), F1 goes up
+  (0.75 → 0.78), and the steady air faults are caught far more often (MAF drift 33% → 55% of drives, AUROC
+  0.61 → 0.68; MAP +10 kPa 24% → 53%, AUROC 0.59 → 0.73). It is not adopted yet because on the synthetic test one more
+  clean drive is flagged (3 → 4 of 15, 20% → 27%: the same borderline exp2_car drive as in the 2nd run). The synthetic
+  test cannot use the 2-of-3 rule, because each of its drives gets a different random fault.
+  The main test also reports, for the team, what happens if **every** alarm must repeat on 2 of the last 3 drives: false
+  alarms per drive drop to 6% (4 of 74), at the cost of fewer faults caught (60% vs 72% of faulty drives) and a one-drive
+  delay. This changes the decision for all faults, so it is a team decision and not part of this fix.
+  **Extra test car (KIT, `--kit`):** one Seat Leon with 81 drives over 9 months (KIT Automotive OBD-II Dataset, CC BY 4.0,
+  kept out of the repo). The bias score catches far more air faults there (MAF drift 13% → 77% of drives, MAP +10 kPa
+  13% → 90%), but false alarms per drive rise from 3 to 8 of 31, and confirmation does not remove them. The reason:
+  that car was fine-tuned on summer drives and tested on winter drives. Cold air is denser, so MAF reads more than the
+  model predicts, by about 9% at 2 °C (the air-density ratio from 26 °C to 2 °C is 299 K / 275 K = 1.087). That offset
+  lasts for weeks, so it looks exactly like a slow fault. A drift alarm needs calibration drives that cover the
+  temperatures the car will see, or an input that tells the model about air density (e.g. MAP ÷ intake temperature).
+  The "3rd run" rows come from one run together, so compare them with each other.
 - **Realistic air faults: kept in the test.** They are caught far more often (45-60% of drives) than the sensor-only
   versions (5-40%), so in a real car these faults would mostly be visible through the fuel trim.
 
