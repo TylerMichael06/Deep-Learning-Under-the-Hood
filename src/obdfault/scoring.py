@@ -64,5 +64,33 @@ def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True):   # final model
         return np.maximum.reduce([ns, nl, nf]), who
     return score, score(E_cal, Dcal, cal_trips)[0]
 
+# ---- slow faults (dirty MAF): one signed number per drive, tracked from drive to drive ----
+GAP_Z = 3                  # a drive is FAULT if its gap is more than 3 of this car's normal spreads below its usual level
+MIN_SPREAD = 0.02          # assumed: a healthy car's drive-to-drive gap varies by at least 2% (few calibration drives)
+
+def drive_gaps(P, D, c, mu, sd, use, min_windows, floor=0.5):
+    """Per drive: sum(measured) / sum(predicted) - 1 for sensor c over the windows in `use`. Signed and taken over the
+    whole drive, so random prediction misses cancel out but a steady bias doesn't. `floor` (g/s for MAF) keeps idle
+    predictions near 0 from blowing up the ratio. Drives with fewer than `min_windows` usable windows are left out."""
+    ok = use & ~np.isnan(P[:, 0])
+    meas = D["x"][ok][:, :, c].numpy() * sd[c] + mu[c]; pred = np.maximum(P[ok] * sd[c] + mu[c], floor)
+    g = pd.DataFrame(dict(trip=D["trip"][ok], m=meas.sum(1), p=pred.sum(1), n=1)).groupby("trip").sum()
+    g = g[g.n >= min_windows]; return g.m / g.p - 1
+
+def gap_z(gap_cal):
+    """From this car's calibration drives: how many normal drive-to-drive spreads a gap is BELOW the car's usual level.
+    Spread = median absolute deviation (one odd drive can't stretch it), never below MIN_SPREAD."""
+    med = gap_cal.median(); s = max(1.4826 * (gap_cal - med).abs().median(), MIN_SPREAD)
+    return lambda gap: (med - gap) / s
+
+def cusum(z, k=0.5, h=4):
+    """Trend check over drives in time order (one-sided CUSUM, textbook k=0.5, h=4): position of the first drive where
+    the running sum of (z - k) passes h, or None if it never does."""
+    S = 0
+    for i, v in enumerate(z):
+        S = max(0, S + v - k)
+        if S > h: return i
+    return None
+
 def auroc(y, s):
     return roc_auc_score(y, s) if 0 < y.sum() < len(y) else np.nan

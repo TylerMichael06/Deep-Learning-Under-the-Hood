@@ -39,14 +39,14 @@ import numpy as np, pandas as pd
 from .config import CH, DT, W, FAULTY_CARS, FINAL_SCORING, KAGGLE_DATA, RESULTS, add_ltft
 from .data import load_kaggle, load_ved
 from .features import PHYSICS, windows
-from .model import channel_errors, ridge_errors
-from .scoring import calibrate, slow_stuck_scorer, auroc
-from .faults import ALL_FAULTS, inject
+from .model import channel_errors, channel_preds, ridge_errors
+from .scoring import calibrate, slow_stuck_scorer, auroc, drive_gaps, gap_z, cusum, GAP_Z
+from .faults import ALL_FAULTS, FAULTS_SEQ, inject
 from .train import prepare_car, save_final
 
 def evaluate_car(unit, trips, a):
     P = prepare_car(unit, trips, a)
-    if P is None: return None, None
+    if P is None: return None, None, None
     base, tuned, mu, sd, Dtr, Dcal, Dclean, test_trips = (P[k] for k in ("base", "tuned", "mu", "sd", "Dtr", "Dcal", "Dclean", "test_trips"))
     has = Dclean["m"].numpy().mean(0) > 0.5
     methods = {"pretrained only": lambda Ds: [channel_errors(base, d) for d in Ds],
@@ -57,7 +57,7 @@ def evaluate_car(unit, trips, a):
     # warm-up grace: minutes before `a.grace` never raise an alarm and are not used to set the cutoff (cold starts)
     minute = lambda D_: (D_["start"] + W) * DT / 60
     warm_cal, warm_clean = minute(Dcal) >= a.grace, minute(Dclean) >= a.grace
-    rows, summ = [], []
+    rows, summ, hits = [], [], {}
     for name, errs in methods.items():
         Es = errs([Dcal, Dclean] + list(fault_sets.values()))
         clean_ok = ~Dclean["code"]
@@ -89,6 +89,7 @@ def evaluate_car(unit, trips, a):
                     y = np.r_[np.zeros(clean_ok.sum()), np.ones(len(s_f))]
                     judged_f = pd.Series(warm_f).groupby(Df["trip"]).sum() >= a.min_judge
                     trip_hit = pd.Series(ff).groupby(Df["trip"]).mean()[judged_f]   # share of each drive's minutes flagged
+                    if name == "fine-tuned (ours)" and scoring == FINAL_SCORING and q == a.cutoffs[0]: hits[f] = (clean_trip_hit, trip_hit)
                     for rule in a.drive_rules:        # a whole drive is FAULT if more than `rule` of its minutes are flagged
                         rows.append(dict(car=unit, method=name, scoring=scoring, cutoff=q, grace_min=a.grace, drive_rule=rule,
                                          fault=f, sensor=ALL_FAULTS[f][0], AUROC=auroc(y, np.r_[s_clean[clean_ok], s_f]),
@@ -100,7 +101,37 @@ def evaluate_car(unit, trips, a):
                                          drive_TP=int((trip_hit > rule).sum()), drive_FN=int((trip_hit <= rule).sum()),
                                          drive_FP=int((clean_trip_hit > rule).sum()), drive_TN=int((clean_trip_hit <= rule).sum()),
                                          drives_too_short=int((~judged_f).sum())))
-    return pd.DataFrame(rows), pd.DataFrame(summ)
+    return pd.DataFrame(rows), pd.DataFrame(summ), drive_gap_report(unit, P, fault_sets, fault_trips, hits, has, a)
+
+def drive_gap_report(unit, P, fault_sets, fault_trips, hits, has, a):
+    """MAF faults, per drive: the current score (share of minutes flagged) vs the signed MAF gap (gap_z), and for the
+    drive-to-drive buildup fault, when the trend check (CUSUM) first alarms. Fine-tuned model only."""
+    j = CH.index("MAF"); tuned, mu, sd, rule = P["tuned"], P["mu"], P["sd"], a.drive_rules[0]
+    gap = lambda D_: drive_gaps(channel_preds(tuned, D_, j), D_, j, mu, sd, (D_["start"] + W) * DT / 60 >= a.grace, a.min_judge)
+    g_cal = gap(P["Dcal"]) if has[j] else []
+    if len(g_cal) < 2: return pd.DataFrame()                    # no MAF, or too few calibration drives to learn its spread
+    z = gap_z(g_cal); z_clean, out = z(gap(P["Dclean"])), []
+    for f, Df in fault_sets.items():
+        if ALL_FAULTS[f][0] != "MAF": continue
+        z_f, (hit_c, hit_f) = z(gap(Df)), hits[f]
+        two = lambda c, f_: np.r_[np.zeros(len(c)), np.ones(len(f_))]
+        either = lambda h, z_: pd.concat([h > rule, z_ > GAP_Z], axis=1).fillna(False).any(axis=1)   # FAULT if either score fires
+        row = dict(car=unit, fault=f, cal_drives=len(g_cal), clean_drives=len(z_clean), faulty_drives=len(z_f),
+                   drive_AUROC_current=auroc(two(hit_c, hit_f), np.r_[hit_c, hit_f]), drive_AUROC_gap=auroc(two(z_clean, z_f), np.r_[z_clean, z_f]),
+                   caught_current=(hit_f > rule).mean(), caught_gap=(z_f > GAP_Z).mean(),
+                   false_alarm_current=(hit_c > rule).mean(), false_alarm_gap=(z_clean > GAP_Z).mean(),
+                   caught_either=either(hit_f, z_f).mean(), false_alarm_either=either(hit_c, z_clean).mean())
+        if f in FAULTS_SEQ:                                       # trend check over the test drives in time order
+            i, t = cusum(z_f.to_numpy()), None
+            if i is not None: t = z_f.index[i]
+            dirt = pd.Series({k: 1 - np.nanmean(fault_trips[f][k]["X"][:, j]) / np.nanmean(P["test_trips"][k]["X"][:, j]) for k in z_f.index})
+            row.update(trend_alarm_at_drive=None if t is None else t + 1, of_drives=len(P["test_trips"]),
+                       buildup_at_alarm=None if t is None else dirt[t], trend_false_alarm=cusum(z_clean.to_numpy()) is not None)
+            for lo, hi in [(0, 10), (10, 20), (20, 100)]:               # how dirty the sensor was on that drive (%)
+                m = (dirt >= lo / 100) & (dirt < hi / 100)
+                row.update({f"drives_dirt_{lo}-{hi}": int(m.sum()), f"caught_gap_dirt_{lo}-{hi}": (z_f[m] > GAP_Z).mean() if m.any() else np.nan})
+        out.append(row)
+    return pd.DataFrame(out)
 
 TAG = ""   # added to output file names (set by --tag, e.g. "_physics")
 
@@ -170,11 +201,11 @@ def main():
         if not a.cars: cars += sorted({t["unit"] for t in ved if t["test_only"]})
     if a.quick and not a.cars: cars = cars[:1] + [c for c in cars if c.startswith("ved")][:1]
     if a.final_only: return save_final(trips, a, t0)
-    all_rows, all_summ = [], []
+    all_rows, all_summ, all_gap = [], [], []
     for u in sorted(cars):
-        t1 = time.time(); r, s = evaluate_car(u, trips, a)
+        t1 = time.time(); r, s, g = evaluate_car(u, trips, a)
         if r is None: print(f"{u}: skipped (not enough data)"); continue
-        all_rows.append(r); all_summ.append(s); print(f"{u}: done in {time.time() - t1:.0f}s", flush=True)
+        all_rows.append(r); all_summ.append(s); all_gap.append(g); print(f"{u}: done in {time.time() - t1:.0f}s", flush=True)
         R, S = pd.concat(all_rows), pd.concat(all_summ)                       # save after every car
         save_csv(R, "obd_results_faults.csv"); save_csv(S, "obd_results_summary.csv")
     pd.set_option("display.width", 220); pd.set_option("display.max_columns", 20); pd.set_option("display.max_colwidth", 50)
@@ -187,7 +218,10 @@ def main():
     print(f"\n=== overall (cutoff {q0}) ===\n", R0.groupby("method")[["AUROC", "window_detection", "drive_detection", "blamed_right_sensor", "false_alarm_rate"]].mean().round(3).to_string())
     print("\n=== binary classifier (FAULT = positive), all cars and faults pooled, every cutoff ===")
     B = binary_report(R); print(B.round(3).to_string(index=False))
-    print("saved", save_csv(R, "obd_results_faults.csv"), save_csv(S, "obd_results_summary.csv"), save_csv(B, "obd_results_binary.csv"))
+    G = pd.concat(all_gap)
+    if len(G): print("\n=== MAF faults per drive: current score vs signed MAF gap (fine-tuned) ===\n", G.round(3).to_string(index=False))
+    print("saved", save_csv(R, "obd_results_faults.csv"), save_csv(S, "obd_results_summary.csv"), save_csv(B, "obd_results_binary.csv"),
+          save_csv(G, "obd_results_drive_gap.csv"))
     if not a.skip_final: save_final(trips, a, t0)
 
 if __name__ == "__main__":
