@@ -155,8 +155,9 @@ Both tests below use exactly these settings.
 ## Step 8: Main evaluation → `evaluate_car`, `binary_report` (`obd_results_*.csv`)
 
 - **8 held-out cars:** car1, car4, car8, car9, car11, car12, car13, exp2_car (exp3_car had too little data to test)
-- **10 sensor faults** injected into copies of the test drives, for the whole drive: MAF under-reads 25%,
-  MAF drifts to -30%, MAP +10 kPa, coolant warms at half speed (thermostat), coolant sensor stuck,
+- **11 sensor faults** injected into copies of the test drives, for the whole drive: MAF under-reads 25%,
+  MAF drifts to -30% (within one drive), **MAF dirt builds up to -30% across drives** (steady within a drive, a little
+  worse each test drive, as real sensor dirt does), MAP +10 kPa, coolant warms at half speed (thermostat), coolant sensor stuck,
   intake temp +15 °C, fuel trim +10% (vacuum leak), noisy throttle, plus **realistic versions of the two air faults**
   (`maf_reacts`, `map_reacts`): the engine computer believes the wrong reading, so the calculated engine load changes
   with it and the short-term fuel trim moves the other way (assumed: half of the fuel error is still visible in the
@@ -168,18 +169,18 @@ Both tests below use exactly these settings.
 
 | Method | AUROC |
 |---|---|
-| **Fine-tuned Transformer (ours)** | **0.81** |
+| **Fine-tuned Transformer (ours)** | **0.80** |
 | Same network, no per-car fine-tuning | 0.77 |
-| Ridge baseline | 0.77 |
+| Ridge baseline | 0.76 |
 
 **Binary scores, ours, final settings:**
 
 | Level | Accuracy | Precision | Recall | F1 | False alarms |
 |---|---|---|---|---|---|
-| Per minute | 0.79 | 0.85 | 0.69 | 0.76 | 12% |
-| **Per drive (>30% rule)** | **0.79** | **0.88** | **0.67** | **0.76** | **9%** |
+| Per minute | 0.78 | 0.85 | 0.67 | 0.75 | 11% |
+| **Per drive (>30% rule)** | **0.77** | **0.88** | **0.63** | **0.73** | **9%** |
 
-Too short to judge: 212 of 796 faulty drive copies (27%) and 25 of 99 clean test drives (25%).
+Too short to judge: 232 of 858 faulty drive copies (27%) and 25 of 99 clean test drives (25%).
 For comparison, the same model with the old settings (Medium line, short drives counted as misses) caught 44% of all faulty drives.
 
 **By fault (AUROC / faulty drives caught / right sensor named):**
@@ -188,19 +189,53 @@ For comparison, the same model with the old settings (Medium line, short drives 
 |---|---|---|---|
 | Fuel trim +10% (vacuum leak) | 0.97 | 98% | 97% |
 | Coolant sensor stuck | 0.96 | 95% | 99% |
-| Intake air temp +15 °C | 0.85 | 79% | 82% |
-| MAF -25%, engine reacts (realistic) | 0.91 | 72% | 9%* |
+| Intake air temp +15 °C | 0.84 | 76% | 81% |
+| MAF -25%, engine reacts (realistic) | 0.90 | 72% | 8%* |
 | MAP +10 kPa, engine reacts (realistic) | 0.85 | 67% | 2%* |
-| Throttle signal noisy | 0.83 | 64% | 49% |
-| MAF -25% (sensor only) | 0.78 | 58% | 57% |
-| Coolant warms at half speed (thermostat) | 0.68 | 42% | 72% |
-| MAF drifts to -30% | 0.61 | 36% | 31% |
-| MAP +10 kPa (sensor only) | 0.58 | 12% | 17% |
+| Throttle signal noisy | 0.83 | 59% | 52% |
+| MAF -25% (sensor only) | 0.77 | 56% | 58% |
+| Coolant warms at half speed (thermostat) | 0.68 | 43% | 71% |
+| MAF dirt builds up to -30% across drives | 0.65 | 25% | 41% |
+| MAF drifts to -30% (within one drive) | 0.61 | 29% | 31% |
+| MAP +10 kPa (sensor only) | 0.58 | 12% | 16% |
 
 \* For the realistic air faults the model blames the **fuel trim**, which is where the fault really shows up;
 a mechanic would read it the same way (a lean/rich trim points to the air sensor), but it counts as "wrong sensor" here.
 
-**Real trouble codes (car13):** AUROC 0.66 (other methods 0.54-0.57).
+**Real trouble codes (car13):** AUROC 0.66 (other methods 0.54-0.55).
+
+(Re-run after the GPU-support change was merged; versus the previous run the shared faults moved by at most 0.01 AUROC
+and a few drives, within the usual run-to-run variation.)
+
+### Slow airflow-sensor faults: one number per drive, tracked over time → `drive_gaps`, `gap_z`, `cusum` (`obd_results_drive_gap.csv`)
+
+Real MAF dirt builds up over weeks: the sensor reads a little low, all drive long. In any single minute that is hidden in
+the network's normal prediction error, and the minute score squares the error, so it can't tell "too low" from "too high".
+So, for MAF only, each drive also gets **one signed number**: total measured ÷ total predicted airflow − 1 (after the
+warm-up; predictions floored at 0.5 g/s). Random prediction misses cancel out over a drive; dirt always pushes the same way.
+
+- **Drive score:** how far below the car's usual gap a drive is, in units of its normal drive-to-drive spread, both
+  taken from the calibration drives (median, and median absolute deviation, never below 2%). FAULT above 3.
+- **Trend check:** a one-sided CUSUM (k = 0.5, h = 4) over the test drives in time order warns when the drive scores
+  keep sliding.
+
+Fine-tuned model, 4 cars with a MAF sensor (car1, car11, car12, exp2_car), 41 clean test drives, pooled over drives:
+
+| MAF fault | Per-drive AUROC: minute score → drive gap | Drives caught: minute score → drive gap | Caught by either |
+|---|---|---|---|
+| Dirt builds up to -30% across drives | 0.67 → **0.94** | 27% → **56%** | 63% |
+| Drifts to -30% within one drive | 0.71 → **0.98** | 32% → **59%** | 65% |
+| -25% (sensor only) | 0.82 → **1.00** | 61% → **76%** | 84% |
+| -25%, engine reacts (realistic) | 0.91 → 0.93 | 73% → 46% | 100% |
+| **Clean drives flagged** | | **12% → 0%** | 12% |
+
+- **By how dirty the sensor was** (buildup fault, drive gap): under 10% low 36% caught (11 drives), 10-20% low 50% (16),
+  over 20% low 79% (14). The smallest amounts are within normal sensor noise and harmless to the engine.
+- **Trend check:** warns on all 4 cars, at 6-21% under-read (car1 drive 3 of 11, exp2_car 4 of 19, car12 10 of 14,
+  car11 11 of 18), and never on the clean drive sequences.
+- When the engine reacts, the calculated load drops with the MAF reading, so the network's MAF prediction drops too and
+  the gap stays small; the minute score catches it through the fuel trim. The two checks complement each other.
+- car11 and car12 are weaker per drive: they have only 4-6 calibration drives to learn the car's normal spread.
 
 ---
 
@@ -325,6 +360,7 @@ for every combination, so the numbers compare fairly.
 - The realistic air faults assume half of the fuel error stays visible in the short-term fuel trim
 - Only 15 healthy cars of training data (several with very little driving), logged every ~4-12 s over Bluetooth
 - Assumes the fine-tune/calibration drives are healthy
+- The MAF drive check assumes a healthy car's drive-to-drive gap varies by at least 2%, and needs a few calibration drives
 
 
 ## Step 13: Using it on your own car (final step, not built yet)
