@@ -82,6 +82,64 @@ python -m obdfault.figures      # figures and summary table
 They read `data/public/kaggle-obd2/` unless you pass `--data <folder>`. `--quick` (evaluate, synthetic) does a fast smoke run on one car. `--skip-final` (evaluate) leaves `models/obd_pretrained.pt` alone.
 Every run overwrites `results/`, `figures/` and `models/`. Use `git checkout -- results figures models` to get the committed versions back.
 
+### CPU and GPU on macOS, Windows, and Linux
+
+Evaluation and synthetic testing accept `--device cpu|mps|cuda|auto`. The default
+is `cpu`, preserving previous runs. `auto` selects an available backend in this
+order: CUDA, MPS, CPU. Explicit `mps` or `cuda` requests fail clearly if unavailable.
+
+| Machine | Backend |
+|---|---|
+| Mac with an MPS-capable GPU and PyTorch build | `mps` |
+| Windows/Linux with an NVIDIA GPU, compatible driver and CUDA-enabled PyTorch | `cuda` |
+| Any supported system without an available GPU backend | `cpu` |
+
+For GPU installation, use the [official PyTorch installer](https://pytorch.org/get-started/locally/)
+and select your OS and compute platform. A CPU-only PyTorch installation will not
+use an NVIDIA GPU. This project does not add DirectML or Intel XPU support; use CPU
+when those are your only available backends. A restricted macOS sandbox may hide MPS.
+
+After creating `.venv`, activate it and install the package:
+
+```bash
+# macOS / Linux
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+```powershell
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+```
+
+With that environment active, the same commands work on all three OSes:
+
+```text
+python -m obdfault.evaluate --device auto
+python -m obdfault.synthetic --device auto
+python -m obdfault.figures
+```
+
+Use `--device mps` to require the Apple GPU, `--device cuda` to require CUDA, or
+`--device cpu` for the original behavior. Each run prints its selected backend.
+Only Transformer training and inference move to the GPU; data preparation, NumPy
+scoring, and ridge stay on CPU. Model weights are saved on CPU for portability.
+Metrics can differ slightly between backends due to floating-point arithmetic
+and random-number streams.
+
+To compare CPU with the available GPU without changing official outputs:
+
+```text
+python scripts/benchmark_devices.py --device auto --output device-benchmark.json
+```
+
+The benchmark uses Kaggle data, holds out `car11`, runs 3 pretraining epochs and
+2 fine-tuning epochs, then scores clean test windows. It warms up both backends,
+alternates their order over three repetitions, synchronizes GPU work, and reports
+median times. It exits with an explanation if no GPU backend is available.
+This measures a short workload, not the full evaluation runtime.
+
 ## Working on it as a team
 
 - `main` is the shared base. Start every piece of work from it:
