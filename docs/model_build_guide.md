@@ -286,7 +286,7 @@ MAF 15% low (sensor only) 1/5 · MAP +8 kPa (sensor only) 0/2 · clean drives 12
 
 ## Step 10: The fixes we tested, and how much better the model got 
 
-After the first version, seven fixes were tested. **Both tests were re-run on exactly the same cars, drives and faults**
+After the first version, eight fixes were tested. **Both tests were re-run on exactly the same cars, drives and faults**
 for every combination, so the numbers compare fairly.
 
 1. **Two-speed alarm:** a second, slow score averaged over 10 minutes, to catch creeping faults.
@@ -305,6 +305,12 @@ for every combination, so the numbers compare fairly.
    calibration drives. A drive that is FAULT only because of the bias score must be FAULT on 2 of the last 3 drives
    (like a car's "pending" trouble code that lights the lamp only when the fault comes back); every other alarm is
    still called on the first drive. Run as scoring "stuck check + bias", level "bias alarms confirmed".
+   (Since item 8, MAF is judged by the drive gap: the bias score now watches MAP and load only, and the MAF share is gone.)
+8. **MAF drive gap in the verdict (issue #33, after PR #42):** the per-drive MAF check from Step 8 (measured ÷ predicted
+   airflow over the drive, compared with the car's calibration drives) also counts toward the HEALTHY/FAULT verdict: a
+   drive is FAULT if the minute rule says so **or** the gap is more than 3 normal spreads low. Needs at least 3
+   calibration drives with a gap (cars with fewer keep the minute verdict). Level "drive (>30%) or MAF drive gap"
+   (main test) and variant "stuck check + MAF drive gap" (synthetic test).
 
 | Configuration | Main AUROC | Main F1 (drive) | Main false alarms | Synthetic F1 (drive) | Synthetic false alarms |
 |---|---|---|---|---|---|
@@ -320,6 +326,8 @@ for every combination, so the numbers compare fairly.
 | + air-sensor bias score (issue #33, 2nd run) | 0.81 | 0.80 | 12% | 0.85 | 27% |
 | stuck check (issue #33, 3rd run) | 0.81 | 0.75 | 16% | 0.81 | 20% |
 | + confirmed bias score (issue #33, 3rd run) | 0.84 | 0.78 | 14% | 0.83 | 27% |
+| stuck check (issue #33, 4th run) | 0.80 | 0.73 | 16% | 0.81 | 20% |
+| + MAF drive gap in the verdict (issue #33, 4th run) | 0.80* | 0.79 | 16% | 0.84 | 20% |
 
 - **Stuck check: kept.** Stuck coolant caught in 78% of drives instead of 44% (main test) and 3/3 instead of 1/3
   (synthetic), with only a small rise in false alarms. Best overall on both tests.
@@ -364,6 +372,17 @@ for every combination, so the numbers compare fairly.
   lasts for weeks, so it looks exactly like a slow fault. A drift alarm needs calibration drives that cover the
   temperatures the car will see, or an input that tells the model about air density (e.g. MAP ÷ intake temperature).
   The "3rd run" rows come from one run together, so compare them with each other.
+- **MAF drive gap in the verdict (issue #33): meets the bar.** Tyler's drive check (PR #42) was only a side report, so
+  the model's verdict did not use it yet. Counting it in the verdict roughly doubles what is caught for slow MAF faults
+  with **no extra false alarms** on any test (main: 11 of 74 clean drives either way; synthetic: 3 of 15; KIT car: 3 of
+  31). Main test, Kaggle cars, stuck check → with the drive gap: MAF drift within a drive caught 33% → 70% of drives,
+  MAF dirt building up across drives 33% → 60%, MAF -25% 63% → 94%, MAF -25% with the engine reacting 74% → 100%;
+  F1 0.73 → 0.79. Synthetic test: F1 0.81 → 0.84, MAF reading 15% low caught 1 → 3 of 5 drives. KIT car: MAF drift
+  13% → 97%, dirt buildup 19% → 84%, F1 0.49 → 0.77. A throwaway test on two training seeds gave the same picture.
+  It replaces the MAF parts of the confirmed bias score (item 7), which caught less and false-alarmed on the KIT car in
+  winter. Not yet the final setting: switching the final verdict to "stuck check OR MAF drive gap" is a team decision.
+  \* The gap check works per drive, so the per-minute AUROC is the stuck check's.
+  The "4th run" rows come from one run together, so compare them with each other.
 - **Realistic air faults: kept in the test.** They are caught far more often (45-60% of drives) than the sensor-only
   versions (5-40%), so in a real car these faults would mostly be visible through the fuel trim.
 
