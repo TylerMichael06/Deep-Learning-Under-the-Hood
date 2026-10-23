@@ -44,14 +44,20 @@ FAULTS_X = {
     "MAF under-reads 25%, engine reacts (realistic)": ("MAF", maf_reacts(0.75)),
     "MAP reads +10 kPa, engine reacts (realistic)":   ("MAP", map_reacts(10)),
 }
-ALL_FAULTS = {**FAULTS, **FAULTS_X}
+# Realistic slow faults: dirt builds up on the sensor over weeks, so the error is steady within a drive and grows from
+# drive to drive. f(v, p) gets p = how far along this car's test drives we are (first drive 1/n ... last drive 1).
+FAULTS_SEQ = {
+    "MAF dirt builds up to -30% across drives":       ("MAF", lambda v, p: v * (1 - 0.3 * p)),
+}
+ALL_FAULTS = {**FAULTS, **FAULTS_X, **FAULTS_SEQ}
 
 def inject(trips, fault):
     c, f = ALL_FAULTS[fault]; j = CH.index(c); out = []
-    for tr in trips:
+    for k, tr in enumerate(trips):                           # trips are in time order
         X = tr["X"].copy()
         if (~np.isnan(X[:, j])).sum() >= W:
             if fault in FAULTS_X: X = f(X)                   # several sensors react
+            elif fault in FAULTS_SEQ: X[:, j] = f(X[:, j], (k + 1) / len(trips))   # worse with every drive
             else: X[:, j] = f(X[:, j])                       # only the faulty sensor changes
         out.append(dict(tr, X=X))
     return out

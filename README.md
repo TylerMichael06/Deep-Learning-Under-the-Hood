@@ -23,14 +23,21 @@ next 20%, and is tested on the last 40%.
 
 | Test | AUROC | Precision | Recall | F1 | False alarms |
 |---|---|---|---|---|---|
-| Main evaluation (8 cars), per drive | 0.81 | 0.88 | 0.67 | 0.76 | 9% |
+| Main evaluation (8 cars), per drive | 0.80 | 0.88 | 0.63 | 0.73 | 9% |
 | Synthetic test (67 drives), per drive | 0.75 | 0.89 | 0.74 | 0.81 | 20%* |
 
 Scores are on drives long enough to judge (about 1 in 4 test drives is too short).
 \* 3 of only 15 judged clean drives in the synthetic test.
 
-Baselines (same network without fine-tuning, per-car linear model): AUROC 0.77. Results vary by about ±0.03 between runs.
+Baselines (same network without fine-tuning, per-car linear model): AUROC 0.76-0.77. Results vary by about ±0.03 between runs.
 Strongest on vacuum leaks and stuck coolant sensors (AUROC 0.96-0.97); weakest on small, steady airflow/pressure errors.
+The main-evaluation numbers include a hard new test fault (airflow sensor dirt building up over many drives), which is why
+they are slightly lower than before.
+
+**Slow airflow-sensor (MAF) dirt:** a second check gives each drive one signed number (measured ÷ predicted airflow) and
+watches it from drive to drive. On the 4 cars with a MAF sensor it separates dirty from clean drives far better than the
+minute score (per-drive AUROC 0.94 vs 0.67), flags no healthy drives (vs 12%), and its trend check warns on all 4 cars
+once the sensor reads 6-21% low. See guide Step 8.
 
 Full details, settings, assumptions and limitations: [`docs/model_build_guide.md`](docs/model_build_guide.md).
 

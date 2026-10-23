@@ -21,7 +21,7 @@ def test_load_kaggle_reads_the_raw_format(tmp_path):
 def test_pipeline_runs_end_to_end():
     PHYSICS.clear(); torch.manual_seed(0)
     trips = make_trips()
-    R, summary = evaluate_car("car2", trips, EVAL_ARGS)
+    R, summary, _ = evaluate_car("car2", trips, EVAL_ARGS)
     assert set(R.method) == {"pretrained only", "fine-tuned (ours)", "ridge baseline"}
     assert R.AUROC.notna().any() and R.AUROC.dropna().between(0, 1).all()
     assert summary.false_alarm_rate.between(0, 1).all()
