@@ -40,7 +40,7 @@ from .config import CH, DT, W, DATA, FAULTY_CARS, FINAL_SCORING, KAGGLE_DATA, RE
 from .data import load_kaggle, load_ved, load_kit
 from .features import PHYSICS, windows
 from .model import resolve_device, channel_errors, channel_preds, ridge_errors
-from .scoring import calibrate, slow_stuck_scorer, auroc, confirm, confirm_bias, drive_gaps, gap_z, cusum, GAP_Z
+from .scoring import calibrate, slow_stuck_scorer, auroc, confirm, confirm_bias, drive_gaps, gap_z, cusum, GAP_Z, MIN_GAP_DRIVES, with_gap
 from .faults import ALL_FAULTS, FAULTS_SEQ, inject
 from .train import prepare_car, save_final
 
@@ -58,6 +58,8 @@ def evaluate_car(unit, trips, a):
     minute = lambda D_: (D_["start"] + W) * DT / 60
     warm_cal, warm_clean = minute(Dcal) >= a.grace, minute(Dclean) >= a.grace
     rows, summ, hits = [], [], {}
+    G = maf_gap_scores(P, fault_sets, has, a)                 # MAF drive gap z-scores (fine-tuned model), or None
+    gap_fault = lambda z: None if G is None else z > GAP_Z
     for name, errs in methods.items():
         Es, Bs = zip(*errs([Dcal, Dclean] + list(fault_sets.values())))     # squared and signed errors
         clean_ok = ~Dclean["code"]
@@ -104,6 +106,13 @@ def evaluate_car(unit, trips, a):
                         # (confirm_bias), and, reported only, every alarm confirmed that way (confirm)
                         scoped_f, scoped_c = confirm_bias(trip_reg > rule, trip_hit > rule), confirm_bias(clean_trip_reg > rule, clean_trip_hit > rule)
                         conf_f, conf_c = confirm(trip_hit > rule), confirm(clean_trip_hit > rule)
+                        # drive verdict OR the MAF drive gap (fine-tuned model only; cars without the gap check keep the verdict)
+                        gap_cols = {}
+                        if name == "fine-tuned (ours)":
+                            gv_f = with_gap(trip_hit > rule, gap_fault(G["faults"][f]) if G else None)
+                            gv_c = with_gap(clean_trip_hit > rule, gap_fault(G["clean"]) if G else None)
+                            gap_cols = dict(gap_detection=gv_f.mean(), gap_TP=int(gv_f.sum()), gap_FN=int((~gv_f).sum()),
+                                            gap_FP=int(gv_c.sum()), gap_TN=int((~gv_c).sum()))
                         rows.append(dict(car=unit, method=name, scoring=scoring, cutoff=q, grace_min=a.grace, drive_rule=rule,
                                          fault=f, sensor=ALL_FAULTS[f][0], AUROC=auroc(y, np.r_[s_clean[clean_ok], s_f]),
                                          window_detection=ff[warm_f].mean(), drive_detection=(trip_hit > rule).mean(),
@@ -117,20 +126,29 @@ def evaluate_car(unit, trips, a):
                                          scoped_TP=int(scoped_f.sum()), scoped_FN=int((~scoped_f).sum()),
                                          scoped_FP=int(scoped_c.sum()), scoped_TN=int((~scoped_c).sum()), confirmed_detection=conf_f.mean(),
                                          confirmed_TP=int(conf_f.sum()), confirmed_FN=int((~conf_f).sum()),
-                                         confirmed_FP=int(conf_c.sum()), confirmed_TN=int((~conf_c).sum())))
-    return pd.DataFrame(rows), pd.DataFrame(summ), drive_gap_report(unit, P, fault_sets, fault_trips, hits, has, a)
+                                         confirmed_FP=int(conf_c.sum()), confirmed_TN=int((~conf_c).sum()), **gap_cols))
+    return pd.DataFrame(rows), pd.DataFrame(summ), drive_gap_report(unit, P, G, fault_trips, hits, a)
 
-def drive_gap_report(unit, P, fault_sets, fault_trips, hits, has, a):
-    """MAF faults, per drive: the current score (share of minutes flagged) vs the signed MAF gap (gap_z), and for the
-    drive-to-drive buildup fault, when the trend check (CUSUM) first alarms. Fine-tuned model only."""
-    j = CH.index("MAF"); tuned, mu, sd, rule = P["tuned"], P["mu"], P["sd"], a.drive_rules[0]
+def maf_gap_scores(P, fault_sets, has, a):
+    """MAF drive gap z-scores (drive_gaps, gap_z; fine-tuned model) for the clean test drives and every fault set, by drive.
+    None if the car has no MAF or fewer than MIN_GAP_DRIVES calibration drives with a gap."""
+    j = CH.index("MAF"); tuned, mu, sd = P["tuned"], P["mu"], P["sd"]
+    if not has[j]: return None
     gap = lambda D_: drive_gaps(channel_preds(tuned, D_, j), D_, j, mu, sd, (D_["start"] + W) * DT / 60 >= a.grace, a.min_judge)
-    g_cal = gap(P["Dcal"]) if has[j] else []
-    if len(g_cal) < 2: return pd.DataFrame()                    # no MAF, or too few calibration drives to learn its spread
-    z = gap_z(g_cal); z_clean, out = z(gap(P["Dclean"])), []
-    for f, Df in fault_sets.items():
+    g_cal = gap(P["Dcal"])
+    if len(g_cal) < MIN_GAP_DRIVES: return None
+    z = gap_z(g_cal)
+    return dict(cal=g_cal, clean=z(gap(P["Dclean"])), faults={f: z(gap(Df)) for f, Df in fault_sets.items()})
+
+def drive_gap_report(unit, P, G, fault_trips, hits, a):
+    """MAF faults, per drive: the current score (share of minutes flagged) vs the signed MAF gap (gap_z), and for the
+    drive-to-drive buildup fault, when the trend check (CUSUM) first alarms. Fine-tuned model only. G: maf_gap_scores."""
+    if G is None: return pd.DataFrame()                         # no MAF, or too few calibration drives to learn its spread
+    j, rule = CH.index("MAF"), a.drive_rules[0]
+    g_cal, z_clean, out = G["cal"], G["clean"], []
+    for f, z_f in G["faults"].items():
         if ALL_FAULTS[f][0] != "MAF": continue
-        z_f, (hit_c, hit_f) = z(gap(Df)), hits[f]
+        hit_c, hit_f = hits[f]
         two = lambda c, f_: np.r_[np.zeros(len(c)), np.ones(len(f_))]
         either = lambda h, z_: pd.concat([h > rule, z_ > GAP_Z], axis=1).fillna(False).any(axis=1)   # FAULT if either score fires
         row = dict(car=unit, fault=f, cal_drives=len(g_cal), clean_drives=len(z_clean), faulty_drives=len(z_f),
@@ -177,6 +195,9 @@ def binary_report(R):
         for col, lab in (("scoped", "bias alarms confirmed"), ("confirmed", "all alarms confirmed (reported only)")):   # EXPERIMENT, #33
             out.append(dict(zip(keys, k[:3]), level=f"drive (>{k[3]:.0%}), {lab} on 2 of last 3 drives",
                             **metrics(*g[[f"{col}_TP", f"{col}_FN", f"{col}_FP", f"{col}_TN"]].sum().to_numpy())))
+        if "gap_TP" in g and g.gap_TP.notna().all():                 # EXPERIMENT, #33: fine-tuned method only
+            out.append(dict(zip(keys, k[:3]), level=f"drive (>{k[3]:.0%}) or MAF drive gap",
+                            **metrics(*g[["gap_TP", "gap_FN", "gap_FP", "gap_TN"]].sum().astype(int).to_numpy())))
     return pd.DataFrame(out).sort_values(keys + ["level"]).reset_index(drop=True)
 
 # =================================== MAIN ======================================

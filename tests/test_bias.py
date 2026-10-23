@@ -164,3 +164,12 @@ def test_confirm_needs_two_of_the_last_three_drives():
 def test_confirm_bias_only_delays_alarms_the_regular_score_did_not_raise():
     regular = [0, 1, 0, 0, 0]; combined = [1, 1, 0, 1, 0]       # drive 2: regular score; drives 1 and 4: bias score only
     assert confirm_bias(regular, combined).tolist() == [False, True, False, True, False]
+
+
+def test_with_gap_adds_maf_gap_alarms_and_keeps_drives_without_a_gap():
+    import pandas as pd
+    from obdfault.scoring import with_gap
+    verdict = pd.Series([False, True, False, False], index=[0, 1, 2, 3])
+    gap = pd.Series([True, False, False], index=[0, 1, 2])           # drive 3 has no gap value (e.g. too few MAF windows)
+    assert with_gap(verdict, gap).tolist() == [True, True, False, False]
+    assert with_gap(verdict, None).equals(verdict)                   # car without the gap check

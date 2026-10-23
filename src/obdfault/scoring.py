@@ -133,6 +133,7 @@ def confirm_bias(regular, combined):
 
 # ---- slow faults (dirty MAF): one signed number per drive, tracked from drive to drive ----
 GAP_Z = 3                  # a drive is FAULT if its gap is more than 3 of this car's normal spreads below its usual level
+MIN_GAP_DRIVES = 3         # calibration drives with a gap needed to learn the car's usual level and spread
 MIN_SPREAD = 0.02          # assumed: a healthy car's drive-to-drive gap varies by at least 2% (few calibration drives)
 
 def drive_gaps(P, D, c, mu, sd, use, min_windows, floor=0.5):
@@ -158,6 +159,12 @@ def cusum(z, k=0.5, h=4):
         S = max(0, S + v - k)
         if S > h: return i
     return None
+
+def with_gap(verdict, gap_fault):
+    """Drive verdicts (bool Series by drive) OR the MAF drive-gap verdicts (bool Series by drive, or None if the car has no
+    gap check). Drives without a gap value keep their verdict."""
+    if gap_fault is None: return verdict
+    return verdict | gap_fault.reindex(verdict.index).fillna(False).astype(bool)
 
 def auroc(y, s):
     return roc_auc_score(y, s) if 0 < y.sum() < len(y) else np.nan

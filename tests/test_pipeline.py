@@ -53,7 +53,9 @@ def test_pipeline_runs_end_to_end():
     plain = R[R.scoring != "stuck check + bias"]               # no bias part: confirming bias alarms changes nothing
     assert (plain.scoped_TP == plain.drive_TP).all() and (plain.scoped_FP == plain.drive_FP).all()
     assert (R.confirmed_TP <= R.drive_TP).all() and (R.confirmed_FP <= R.drive_FP).all()
-    levels = set(binary_report(R).level)
+    B = binary_report(R); levels = set(B.level)
+    gap_methods = set(B[B.level == "drive (>30%) or MAF drive gap"].method)
+    assert gap_methods == {"fine-tuned (ours)"}                       # the MAF drive gap uses the fine-tuned model only
     assert {"drive (>30%), bias alarms confirmed on 2 of last 3 drives",
             "drive (>30%), all alarms confirmed (reported only) on 2 of last 3 drives"} <= levels
     rows, key = run_synthetic_car("car2", trips, SYN_ARGS, np.random.RandomState(42))
