@@ -49,10 +49,9 @@ def evaluate_car(unit, trips, a):
     if P is None: return None, None, None
     base, tuned, mu, sd, Dtr, Dcal, Dclean, test_trips = (P[k] for k in ("base", "tuned", "mu", "sd", "Dtr", "Dcal", "Dclean", "test_trips"))
     has = Dclean["m"].numpy().mean(0) > 0.5
-    scale = (mu, sd)                                    # MAF's signed error as a share of predicted airflow (bias score)
-    methods = {"pretrained only": lambda Ds: [channel_errors(base, d, signed=True, scale=scale) for d in Ds],
-               "fine-tuned (ours)": lambda Ds: [channel_errors(tuned, d, signed=True, scale=scale) for d in Ds],
-               "ridge baseline": lambda Ds: ridge_errors(Dtr, Ds, signed=True, scale=scale)}
+    methods = {"pretrained only": lambda Ds: [channel_errors(base, d, signed=True) for d in Ds],
+               "fine-tuned (ours)": lambda Ds: [channel_errors(tuned, d, signed=True) for d in Ds],
+               "ridge baseline": lambda Ds: ridge_errors(Dtr, Ds, signed=True)}
     fault_trips = {f: inject(test_trips, f) for f in ALL_FAULTS if has[CH.index(ALL_FAULTS[f][0])]}
     fault_sets = {f: windows(t, mu, sd, stride=2) for f, t in fault_trips.items()}
     # warm-up grace: minutes before `a.grace` never raise an alarm and are not used to set the cutoff (cold starts)

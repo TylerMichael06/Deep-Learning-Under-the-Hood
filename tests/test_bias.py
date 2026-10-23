@@ -2,16 +2,15 @@
 import numpy as np, torch
 from synthdata import make_trips
 from obdfault.features import PHYSICS, windows
-from obdfault.model import VirtualSensorNet, channel_errors, ridge_errors, MAF_FLOOR
+from obdfault.model import VirtualSensorNet, channel_errors, ridge_errors
 from obdfault.config import CH
 
 
-def _windows(scale=False):
+def _windows():
     PHYSICS.clear(); torch.manual_seed(0)
     trips = make_trips(n_cars=1, n_trips=2)
     allX = np.concatenate([t["X"] for t in trips]); mu, sd = np.nanmean(allX, 0), np.nanstd(allX, 0) + 1e-6
-    D = windows(trips, mu, sd, stride=2)
-    return (D, mu, sd) if scale else D
+    return windows(trips, mu, sd, stride=2)
 
 
 def _check_signed(E, E2, B):
@@ -30,20 +29,6 @@ def test_ridge_errors_can_also_return_the_signed_error():
     D = _windows()
     [E] = ridge_errors(D, [D]); [(E2, B)] = ridge_errors(D, [D], signed=True)
     _check_signed(E, E2, B)
-
-
-def test_maf_signed_error_can_be_a_share_of_predicted_airflow():
-    D, mu, sd = _windows(scale=True); model = VirtualSensorNet(); j = CH.index("MAF")
-    _, B = channel_errors(model, D, signed=True); _, Bs = channel_errors(model, D, signed=True, scale=(mu, sd))
-    others = [c for c in range(len(CH)) if c != j]
-    assert np.allclose(B[:, others], Bs[:, others], equal_nan=True)            # only MAF changes
-    with torch.no_grad():                                                     # prediction of hidden MAF, in g/s
-        vis = D["m"][:, :len(CH)].clone(); vis[:, j] = 0
-        pred = model(D["x"], vis, D["ctx"])[:, :, j].numpy().mean(1) * sd[j] + mu[j]
-    ok = ~np.isnan(B[:, j])
-    assert np.allclose(Bs[ok, j], B[ok, j] * sd[j] / np.maximum(pred[ok], MAF_FLOOR), atol=1e-5)
-    [(_, Br)] = ridge_errors(D, [D], signed=True); [(_, Brs)] = ridge_errors(D, [D], signed=True, scale=(mu, sd))
-    assert np.allclose(Br[:, others], Brs[:, others], equal_nan=True) and not np.allclose(Br[:, j], Brs[:, j], equal_nan=True)
 
 
 from obdfault.scoring import running_cusum, bias_scorer
@@ -76,7 +61,7 @@ def test_running_cusum_skips_missing_values():
 
 from obdfault.scoring import BIAS_SENSORS
 
-MAF, IAT, STFT = CH.index("MAF"), CH.index("IAT"), CH.index("STFT1")
+MAP, MAF, IAT, STFT = CH.index("MAP"), CH.index("MAF"), CH.index("IAT"), CH.index("STFT1")
 
 
 def _drives(n=300, k=3):
@@ -89,26 +74,26 @@ def test_bias_scorer_flags_an_offset_and_blames_its_sensor():
     rng, D = np.random.RandomState(0), _drives()
     B_cal = rng.normal(0.3, 1, (300, len(CH)))                  # this car's model is always 0.3 off: calibrated away
     score, s_cal = bias_scorer(B_cal, D, k=0.5, grace=0)
-    clean = rng.normal(0.3, 1, (300, len(CH))); faulty = clean.copy(); faulty[:, MAF] += 1.5
+    clean = rng.normal(0.3, 1, (300, len(CH))); faulty = clean.copy(); faulty[:, MAP] += 1.5
     s_clean, _ = score(clean, D); s_fault, who = score(faulty, D)
     assert s_cal.shape == (300,) and s_clean.max() < 10
     assert s_fault.max() > 5 * s_clean.max()
-    assert who[D["trip"] == 0][-1] == MAF
+    assert who[D["trip"] == 0][-1] == MAP
 
 
 def test_bias_scorer_only_watches_the_air_sensors():
-    assert BIAS_SENSORS == ["MAF", "MAP", "LOAD"]
+    assert BIAS_SENSORS == ["MAP", "LOAD"]
     rng, D = np.random.RandomState(0), _drives()
     score, _ = bias_scorer(rng.normal(0, 1, (300, len(CH))), D, k=0.5, grace=0)
     clean = rng.normal(0, 1, (300, len(CH))); off = clean.copy()
-    off[:, IAT] += 3; off[:, STFT] += 3                        # intake temp and fuel trim are not watched
+    off[:, [MAF, IAT, STFT]] += 3                              # MAF (drive gap check), intake temp, fuel trim: not watched
     s_clean, _ = score(clean, D); s_off, who = score(off, D)
-    assert np.allclose(s_off, s_clean) and not np.isin(who, [IAT, STFT]).any()
+    assert np.allclose(s_off, s_clean) and not np.isin(who, [MAF, IAT, STFT]).any()
 
 
 def test_bias_scorer_calibration_scores_are_leave_one_drive_out():
     D = dict(trip=np.repeat([0, 1, 2], 100), start=np.tile(np.arange(0, 200, 2), 3))
-    B = np.random.RandomState(0).normal(0, 1, (300, len(CH))); B[D["trip"] == 2, MAF] += 1.0   # one drive with its own offset
+    B = np.random.RandomState(0).normal(0, 1, (300, len(CH))); B[D["trip"] == 2, MAP] += 1.0   # one drive with its own offset
     score, s_cal = bias_scorer(B, D, k=0.5, grace=0)
     in_sample, _ = score(B, D); last = D["trip"] == 2
     assert s_cal[last].max() > 2 * in_sample[last].max()     # judged by the other drives, the offset stands out
@@ -120,7 +105,7 @@ def test_bias_scorer_is_off_with_fewer_than_three_calibration_drives():
 
 
 def test_bias_scorer_waits_for_the_warm_up():
-    D = _drives(); B = np.random.RandomState(0).normal(0, 1, (300, len(CH))); B[:, MAF] += 3
+    D = _drives(); B = np.random.RandomState(0).normal(0, 1, (300, len(CH))); B[:, MAP] += 3
     score, _ = bias_scorer(B, D, k=0.5, grace=5)
     s, who = score(B, D); early = D["start"] < 48               # window ends before minute 5: (start + 12) * 5 s < 300 s
     assert (s[early] == 0).all() and (who[early] == -1).all() and s[~early].max() > 0

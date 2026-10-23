@@ -57,7 +57,7 @@ def running_cusum(z, k):
         out[i, ok] = np.maximum(up, down)[ok]
     return out
 
-BIAS_SENSORS = ["MAF", "MAP", "LOAD"]   # air-path sensors the bias score watches; others (fuel trim too) shift between healthy drives
+BIAS_SENSORS = ["MAP", "LOAD"]   # air-path sensors the bias score watches (MAF: drive gap); fuel trim shifts between healthy drives
 MIN_BIAS_DRIVES = 3                      # fewer calibration drives can't show how much healthy drives differ: bias score off
 
 def bias_scorer(B_cal, Dcal, k, grace):

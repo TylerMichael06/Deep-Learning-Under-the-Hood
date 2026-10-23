@@ -77,8 +77,7 @@ def test_car(unit, trips, a, rng):
     # --- score with the final settings. With a warm-up grace period of g minutes, the first g minutes of every drive
     #     never raise an alarm, and they are also left out when the alarm level is set from calibration drives.
     D = windows(test, P["mu"], P["sd"], stride=2); Dc = P["Dcal"]
-    scale = (P["mu"], P["sd"])                                   # MAF's signed error as a share of predicted airflow (bias score)
-    (E_cal, B_cal), (E, B) = (channel_errors(P["tuned"], d, signed=True, scale=scale) for d in (Dc, D))
+    (E_cal, B_cal), (E, B) = (channel_errors(P["tuned"], d, signed=True) for d in (Dc, D))
     cal_min = (Dc["start"] + W) / STEPS_PER_MIN
     # current: score averaged over the last 2 minutes
     score, s_cal = calibrate(E_cal, Dc["trip"], a.smooth)

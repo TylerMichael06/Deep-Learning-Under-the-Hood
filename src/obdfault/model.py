@@ -66,20 +66,10 @@ def fit(model, D, idx_tr, idx_va, epochs, lr, bs=256, patience=5):
             if bad >= patience: break
     model.load_state_dict(state); return model
 
-MAF_FLOOR = 2.0   # g/s, about idle: keeps the airflow share finite when the predicted airflow is ~0
-
-def signed_mean(c, r, pred, scale):
-    """Mean signed error over the window. With scale=(mu, sd), MAF's is a share of the predicted airflow instead
-    (EXPERIMENT, issue #33): a dirty MAF reads a fixed share low, so the share is the same at idle and on the highway."""
-    if scale is None or CH[c] != "MAF": return r.mean(1)
-    mu, sd = scale
-    return r.mean(1) * sd[c] / np.maximum(pred.mean(1) * sd[c] + mu[c], MAF_FLOOR)
-
 @torch.no_grad()
-def channel_errors(model, D, bs=1024, signed=False, scale=None):
+def channel_errors(model, D, bs=1024, signed=False):
     """(N, C): error of each sensor when it alone is hidden and predicted from the others. NaN if the window lacks it.
-    signed=True also returns the mean signed error (prediction - reading), (N, C), used by the bias score; with
-    scale=(mu, sd), MAF's signed error is a share of the predicted airflow (signed_mean)."""
+    signed=True also returns the mean signed error (prediction - reading), (N, C), used by the bias score."""
     model.eval(); N = len(D["x"]); E = np.full((N, len(CH)), np.nan); S = E.copy()
     device = next(model.parameters()).device
     for c in range(len(CH)):
@@ -89,8 +79,7 @@ def channel_errors(model, D, bs=1024, signed=False, scale=None):
             x, m, ctx = device_batch(D, b, device)
             vis = m[:, :len(CH)].clone(); vis[:, c] = 0
             pred = model(x, visible(vis, m), ctx)
-            p = pred[:, :, c].cpu().numpy(); r = p - x[:, :, c].cpu().numpy()
-            E[b, c] = (r ** 2).mean(1); S[b, c] = signed_mean(c, r, p, scale)
+            r = (pred[:, :, c] - x[:, :, c]).cpu().numpy(); E[b, c] = (r ** 2).mean(1); S[b, c] = r.mean(1)
     return (E, S) if signed else E
 
 @torch.no_grad()
@@ -107,10 +96,10 @@ def channel_preds(model, D, c, bs=1024):
     return P
 
 # ---- baseline: per-car linear virtual sensor ----------------------------------
-def ridge_errors(D_fit, D_list, lam=1.0, signed=False, scale=None):
+def ridge_errors(D_fit, D_list, lam=1.0, signed=False):
     """For each sensor, a ridge regression from the other sensors (+ warm-up time) at the same instant,
     fitted on this car's own fine-tune data (sensors only, no physics inputs). Returns an (N, C) error array for each dataset;
-    signed=True returns (error, signed error) pairs instead, like channel_errors (scale: see signed_mean)."""
+    signed=True returns (error, signed error) pairs instead, like channel_errors."""
     C = len(CH); xf, mf = D_fit["x"].numpy()[:, :, :C], D_fit["m"].numpy()[:, :C]; present = mf.mean(0) > 0.5
     outs = [np.full((len(D["x"]), len(CH)), np.nan) for D in D_list]; sgn = [E.copy() for E in outs]
     for c in np.where(present)[0]:
@@ -123,5 +112,5 @@ def ridge_errors(D_fit, D_list, lam=1.0, signed=False, scale=None):
         for D, E, S in zip(D_list, outs, sgn):
             x, m = D["x"].numpy()[:, :, :C], D["m"].numpy()[:, :C]; ok = m[:, others + [c]].all(1)
             B = np.concatenate([x[ok][:, :, others], D["ctx"].numpy()[ok][..., None], np.ones((ok.sum(), W, 1))], -1)
-            p = B @ w; r = p - x[ok][:, :, c]; E[ok, c] = (r ** 2).mean(1); S[ok, c] = signed_mean(c, r, p, scale)
+            r = B @ w - x[ok][:, :, c]; E[ok, c] = (r ** 2).mean(1); S[ok, c] = r.mean(1)
     return list(zip(outs, sgn)) if signed else outs
