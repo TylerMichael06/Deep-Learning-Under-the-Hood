@@ -61,5 +61,7 @@ def test_pipeline_runs_end_to_end():
     rows, key = run_synthetic_car("car2", trips, SYN_ARGS, np.random.RandomState(42))
     _, key = decide(rows, key, 5, 0.3, FINAL_VARIANT)
     assert set(key.model_says) <= {"HEALTHY", "FAULT", "TOO SHORT"}
+    _, key_gap = decide(rows, key, 5, 0.3, "only+gap")             # stuck check OR the MAF drive gap
+    assert ((key.model_says == "FAULT") <= (key_gap.model_says == "FAULT")).all()
     _, key_bias = decide(rows, key, 5, 0.3, "bias")
     assert set(key_bias.model_says) <= {"HEALTHY", "FAULT", "TOO SHORT"}

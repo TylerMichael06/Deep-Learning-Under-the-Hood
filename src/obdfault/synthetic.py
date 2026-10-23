@@ -20,8 +20,8 @@ from sklearn.metrics import roc_auc_score
 from .config import CH, DT, W, KAGGLE_DATA, RESULTS
 from .data import load_kaggle
 from .features import PHYSICS, windows
-from .model import resolve_device, channel_errors
-from .scoring import calibrate, unit_scale, flat_minutes, FLAT_SENSORS, bias_scorer
+from .model import resolve_device, channel_errors, channel_preds
+from .scoring import calibrate, unit_scale, flat_minutes, FLAT_SENSORS, bias_scorer, drive_gaps, gap_z, GAP_Z, MIN_GAP_DRIVES
 from .faults import maf_reacts, map_reacts
 from .train import prepare_car
 
@@ -121,17 +121,26 @@ def test_car(unit, trips, a, rng):
         rows[f"thr_only_{g}"] = np.quantile(only_cal[ok], a.cutoff)
         rows[f"thr_bias_{g}"] = np.quantile(withb_cal[ok], a.cutoff)
     key = pd.DataFrame(key).assign(car=unit, truth=lambda k: np.where(k.fault == "clean", "HEALTHY", "FAULT"))
+    # EXPERIMENT (issue #33): the MAF drive gap per test drive (see obdfault.evaluate.maf_gap_scores); False without the check
+    j, g0 = CH.index("MAF"), max(a.graces)
+    gap = lambda D_: drive_gaps(channel_preds(P["tuned"], D_, j), D_, j, P["mu"], P["sd"], (D_["start"] + W) / STEPS_PER_MIN >= g0, 6)
+    g_cal = gap(Dc)
+    z = gap_z(g_cal)(gap(D)) if len(g_cal) >= MIN_GAP_DRIVES else pd.Series(dtype=float)
+    key["gap_fault"] = [bool(z.get(k, np.nan) > GAP_Z) for k in key.drive]
     print(f"{unit}: {len(key)} test drives ({(key.fault != 'clean').sum()} with a fault)", flush=True)
     return rows, key
 
 VARIANTS = {"current (2-min score)": "", "two-speed (2 + 10 min)": "two", "two-speed + stuck check": "stuck",
-            "stuck check (no two-speed)": "only", "stuck check + bias": "bias"}   # "+ bias" = EXPERIMENT, issue #33
+            "stuck check (no two-speed)": "only", "stuck check + bias": "bias",   # "+ bias" = EXPERIMENT, issue #33
+            "stuck check + MAF drive gap": "only+gap"}                            # EXPERIMENT, issue #33: drive verdict OR gap
 FINAL_VARIANT = "only"      # final model: 2-minute score + stuck-sensor check
 
 def decide(rows, key, g, rule, variant="", min_judge=6):
     """Apply the alarm with a g-minute warm-up grace period; fill in the model's verdict for every drive.
     Minutes in the warm-up are not judged; drives with fewer than min_judge windows (1 minute) after the warm-up
-    are "TOO SHORT" to judge. Both are reported separately, not counted as caught or missed."""
+    are "TOO SHORT" to judge. Both are reported separately, not counted as caught or missed.
+    A variant ending in "+gap" (EXPERIMENT, issue #33) also calls a judged drive FAULT if its MAF drive gap fires (key.gap_fault)."""
+    use_gap = variant.endswith("+gap"); variant = variant.removesuffix("+gap")
     sfx = f"_{variant}" if variant else ""
     rows = rows.assign(score=rows["score" + sfx], blamed=rows["blamed" + sfx], threshold=rows[f"thr{sfx}_{g}"])
     rows["judged"] = rows.minute >= g
@@ -139,7 +148,9 @@ def decide(rows, key, g, rule, variant="", min_judge=6):
     key = key.copy(); ids = list(zip(key.car, key.drive))
     share = rows.groupby(["car", "drive"]).flagged.mean(); n_judged = rows.groupby(["car", "drive"]).judged.sum()
     key["judged"] = [n_judged.get(i, 0) >= min_judge for i in ids]
-    key["model_says"] = ["TOO SHORT" if not j else "FAULT" if share.get(i, 0) > rule else "HEALTHY" for i, j in zip(ids, key.judged)]
+    gap = key.gap_fault.to_numpy() if use_gap else np.zeros(len(key), bool)
+    key["model_says"] = ["TOO SHORT" if not j else "FAULT" if share.get(i, 0) > rule or gf else "HEALTHY"
+                         for i, j, gf in zip(ids, key.judged, gap)]
     hit = rows[rows.flagged & rows.truth].groupby(["car", "drive"])
     blamed, first = hit.blamed.agg(lambda b: b.value_counts().index[0]), hit.minute.min()   # first correct alarm
     key["model_blames"] = [blamed.get(i, "") for i in ids]
