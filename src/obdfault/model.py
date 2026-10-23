@@ -93,6 +93,19 @@ def channel_errors(model, D, bs=1024, signed=False, scale=None):
             E[b, c] = (r ** 2).mean(1); S[b, c] = signed_mean(c, r, p, scale)
     return (E, S) if signed else E
 
+@torch.no_grad()
+def channel_preds(model, D, c, bs=1024):
+    """(N, W): the model's prediction of sensor c (normalized units) when it alone is hidden. NaN if the window lacks it."""
+    model.eval(); P = np.full((len(D["x"]), W), np.nan)
+    device = next(model.parameters()).device
+    idx = np.where(D["m"][:, c].numpy() > 0)[0]
+    for i in range(0, len(idx), bs):
+        b = idx[i:i + bs]
+        x, m, ctx = device_batch(D, b, device)
+        vis = m[:, :len(CH)].clone(); vis[:, c] = 0
+        P[b] = model(x, visible(vis, m), ctx)[:, :, c].cpu().numpy()
+    return P
+
 # ---- baseline: per-car linear virtual sensor ----------------------------------
 def ridge_errors(D_fit, D_list, lam=1.0, signed=False, scale=None):
     """For each sensor, a ridge regression from the other sensors (+ warm-up time) at the same instant,

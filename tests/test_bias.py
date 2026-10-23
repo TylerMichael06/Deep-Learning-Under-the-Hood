@@ -46,31 +46,31 @@ def test_maf_signed_error_can_be_a_share_of_predicted_airflow():
     assert np.allclose(Br[:, others], Brs[:, others], equal_nan=True) and not np.allclose(Br[:, j], Brs[:, j], equal_nan=True)
 
 
-from obdfault.scoring import cusum, bias_scorer
+from obdfault.scoring import running_cusum, bias_scorer
 
 
-def test_cusum_grows_steadily_on_a_constant_offset():
-    out = cusum(np.full((20, 1), 1.0), k=0.5)
+def test_running_cusum_grows_steadily_on_a_constant_offset():
+    out = running_cusum(np.full((20, 1), 1.0), k=0.5)
     assert np.allclose(out[:, 0], 0.5 * np.arange(1, 21))
 
 
-def test_cusum_catches_both_directions():
-    out = cusum(np.full((10, 2), [-1.0, 1.0]), k=0.5)          # sensor 0 reads high, sensor 1 reads low
+def test_running_cusum_catches_both_directions():
+    out = running_cusum(np.full((10, 2), [-1.0, 1.0]), k=0.5)          # sensor 0 reads high, sensor 1 reads low
     assert np.allclose(out[-1], [5.0, 5.0])
 
 
-def test_cusum_stays_small_on_zero_mean_noise():
+def test_running_cusum_stays_small_on_zero_mean_noise():
     z = np.random.RandomState(0).normal(0, 1, (500, 1))
-    assert cusum(z, k=0.5).max() < 10                          # a constant offset of 1 would reach 250
+    assert running_cusum(z, k=0.5).max() < 10                          # a constant offset of 1 would reach 250
 
 
-def test_cusum_starts_growing_only_when_the_offset_starts():
-    out = cusum(np.r_[np.zeros((10, 1)), np.ones((10, 1))], k=0.5)[:, 0]
+def test_running_cusum_starts_growing_only_when_the_offset_starts():
+    out = running_cusum(np.r_[np.zeros((10, 1)), np.ones((10, 1))], k=0.5)[:, 0]
     assert (out[:10] == 0).all() and np.isclose(out[-1], 5.0)
 
 
-def test_cusum_skips_missing_values():
-    out = cusum(np.array([[1.0], [np.nan], [1.0]]), k=0.5)[:, 0]
+def test_running_cusum_skips_missing_values():
+    out = running_cusum(np.array([[1.0], [np.nan], [1.0]]), k=0.5)[:, 0]
     assert np.isclose(out[0], 0.5) and np.isnan(out[1]) and np.isclose(out[2], 1.0)
 
 

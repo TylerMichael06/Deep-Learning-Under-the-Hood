@@ -46,7 +46,7 @@ def unit_scale(x_cal, x):
     return (x - med) / max(top - med, 1e-6)
 
 # ---- EXPERIMENT (issue #33): bias score for slow air-sensor drift; off in the final model ------------------------------
-def cusum(z, k):
+def running_cusum(z, k):
     """Two-sided CUSUM through one drive. z: (N, C) standardized signed errors in time order (NaN = missing).
     'up' adds up readings lower than predicted, 'down' higher; each total forgets k per window and never drops below 0,
     so noise stays near 0 while a steady offset keeps growing. Returns (N, C) = max(up, down), NaN where z is missing."""
@@ -75,7 +75,7 @@ def bias_scorer(B_cal, Dcal, k, grace):
     def scorer(m, s):
         def score(B, D):
             Z = np.where(warm(D)[:, None], (B - m) / s, np.nan); T = np.full(Z.shape, np.nan)
-            for t in np.unique(D["trip"]): i = D["trip"] == t; T[i] = cusum(Z[i], k)
+            for t in np.unique(D["trip"]): i = D["trip"] == t; T[i] = running_cusum(Z[i], k)
             T = np.where(np.isnan(T), -np.inf, T); sc, who = T.max(1), T.argmax(1)
             return np.where(np.isfinite(sc), sc, 0.0), np.where(np.isfinite(sc), who, -1)
         return score
@@ -130,6 +130,34 @@ def confirm_bias(regular, combined):
     drives (confirm), because the bias score catches slow faults that persist from drive to drive."""
     regular, combined = np.asarray(regular, bool), np.asarray(combined, bool)
     return regular | confirm(combined)
+
+# ---- slow faults (dirty MAF): one signed number per drive, tracked from drive to drive ----
+GAP_Z = 3                  # a drive is FAULT if its gap is more than 3 of this car's normal spreads below its usual level
+MIN_SPREAD = 0.02          # assumed: a healthy car's drive-to-drive gap varies by at least 2% (few calibration drives)
+
+def drive_gaps(P, D, c, mu, sd, use, min_windows, floor=0.5):
+    """Per drive: sum(measured) / sum(predicted) - 1 for sensor c over the windows in `use`. Signed and taken over the
+    whole drive, so random prediction misses cancel out but a steady bias doesn't. `floor` (g/s for MAF) keeps idle
+    predictions near 0 from blowing up the ratio. Drives with fewer than `min_windows` usable windows are left out."""
+    ok = use & ~np.isnan(P[:, 0])
+    meas = D["x"][ok][:, :, c].numpy() * sd[c] + mu[c]; pred = np.maximum(P[ok] * sd[c] + mu[c], floor)
+    g = pd.DataFrame(dict(trip=D["trip"][ok], m=meas.sum(1), p=pred.sum(1), n=1)).groupby("trip").sum()
+    g = g[g.n >= min_windows]; return g.m / g.p - 1
+
+def gap_z(gap_cal):
+    """From this car's calibration drives: how many normal drive-to-drive spreads a gap is BELOW the car's usual level.
+    Spread = median absolute deviation (one odd drive can't stretch it), never below MIN_SPREAD."""
+    med = gap_cal.median(); s = max(1.4826 * (gap_cal - med).abs().median(), MIN_SPREAD)
+    return lambda gap: (med - gap) / s
+
+def cusum(z, k=0.5, h=4):
+    """Trend check over drives in time order (one-sided CUSUM, textbook k=0.5, h=4): position of the first drive where
+    the running sum of (z - k) passes h, or None if it never does."""
+    S = 0
+    for i, v in enumerate(z):
+        S = max(0, S + v - k)
+        if S > h: return i
+    return None
 
 def auroc(y, s):
     return roc_auc_score(y, s) if 0 < y.sum() < len(y) else np.nan
