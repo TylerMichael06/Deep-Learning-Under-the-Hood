@@ -23,4 +23,4 @@ def add_ltft():
         CH.append("LTFT1"); SRC["LTFT1"] = "LONG TERM FUEL TRIM BANK 1"; RANGE["LTFT1"] = (-50, 50)
 
 FAULTY_CARS = {"car6"}   # P0133 for the whole log: never used as "healthy"
-FINAL_SCORING = "stuck check"   # chosen after comparing all fixes: usual 2-minute score + stuck-sensor check
+FINAL_SCORING = "stuck check + MAP direction"   # usual 2-minute score + stuck-sensor check + MAP direction check (issue #32)

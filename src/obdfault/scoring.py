@@ -1,7 +1,9 @@
 """Steps 6-7: turn prediction errors into minute scores and alarm lines (calibration, stuck-sensor check)."""
-import numpy as np, pandas as pd
+import numpy as np, pandas as pd, torch
 from sklearn.metrics import roc_auc_score
 from .config import CH, DT, W
+from .features import visible
+from .model import device_batch
 
 # ====================== STEP 4: SCORE + CALIBRATE ==============================
 def calibrate(E_cal, trip_cal, smooth, per_sensor=False):    # per_sensor=True: EXPERIMENT, not used in the final model
@@ -54,7 +56,7 @@ def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True):   # final model
     slow, slow_cal = calibrate(E_cal, Dcal["trip"], a.smooth_long)
     warm = (Dcal["start"] + W) * DT / 60 >= a.grace
     longest = np.maximum(flat_minutes(cal_trips, Dcal).max(0), a.min_flat)
-    def score(E, D, trips):
+    def score(E, D, trips, B=None):                                                   # B: only used by map_scorer
         (s, who), (l, who_l) = fast(E, D["trip"]), slow(E, D["trip"])
         ns, nl = unit_scale(fast_cal[warm], s), unit_scale(slow_cal[warm], l)
         if not use_slow: nl = np.full_like(nl, -np.inf)                            # stuck check only
@@ -63,6 +65,60 @@ def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True):   # final model
         who = np.where(nf > np.maximum(ns, nl), np.array([CH.index(c) for c in FLAT_SENSORS])[f.argmax(1)], who)
         return np.maximum.reduce([ns, nl, nf]), who
     return score, score(E_cal, Dcal, cal_trips)[0]
+
+# ---- MAP direction check (issue #32; part of the final scoring, "stuck check + MAP direction") ----------------------
+# A MAP sensor reading a few kPa high still looks normal to the 2-minute score: squaring the prediction error throws
+# away its direction, and while the throttle moves the healthy error is large anyway. This check keeps the direction:
+# MAP's signed error (logged - predicted), averaged over 2 minutes. Healthy errors swing both ways and cancel out; an
+# offset doesn't. It only counts beyond the 99th percentile of this car's calibration minutes (and then it is >= 1,
+# above the alarm line), so it puts at most ~1% of calibration minutes above the line and leaves the line for the other
+# sensors where it was. (An idle-MAP check was also tried: it doubled false alarms on car1 and car13, so it was dropped.)
+MAP_SCORING = "stuck check + MAP direction"
+MAP_Q = 0.99
+
+@torch.no_grad()
+def map_bias(model, D, bs=1024):
+    """(N,): MAP's mean signed error (logged - predicted, normalized units) when MAP alone is hidden, as in
+    channel_errors. NaN if the window lacks MAP."""
+    model.eval(); c = CH.index("MAP"); B = np.full(len(D["x"]), np.nan)
+    device = next(model.parameters()).device
+    idx = np.where(D["m"][:, c].numpy() > 0)[0]
+    for i in range(0, len(idx), bs):
+        b = idx[i:i + bs]
+        x, m, ctx = device_batch(D, b, device)
+        vis = m[:, :len(CH)].clone(); vis[:, c] = 0
+        B[b] = (x[:, :, c] - model(x, visible(vis, m), ctx)[:, :, c]).mean(1).cpu().numpy()
+    return B
+
+def map_direction(B_cal, Dcal, smooth, grace):
+    """Calibrates the direction check on this car's calibration drives (after the warm-up). Returns check(B, trip) -> (N,):
+    MAP's signed error, z-scored and averaged over the last `smooth` windows of the drive, in units of its calibration
+    99th percentile, only where it is beyond it (>= 1); -inf elsewhere (nothing unusual, or no MAP)."""
+    off = lambda B, trip: np.full(len(trip), -np.inf)
+    if np.isnan(B_cal).all(): return off                                 # car has no MAP
+    mb, sb = np.nanmean(B_cal), np.nanstd(B_cal) + 1e-6
+    def avg(B, trip):
+        Z = pd.Series((B - mb) / sb)
+        return np.abs(Z.groupby(trip).transform(lambda c: c.rolling(smooth, min_periods=1).mean()).to_numpy())
+    warm = (Dcal["start"] + W) * DT / 60 >= grace
+    a_cal = avg(B_cal, Dcal["trip"])[warm]; a_cal = a_cal[~np.isnan(a_cal)]
+    if len(a_cal) < 20: return off                                       # too little calibration data: check off
+    tol = max(np.quantile(a_cal, MAP_Q), 1e-6)
+    def check(B, trip):
+        r = avg(B, trip) / tol
+        return np.where(r >= 1, r, -np.inf)                              # NaN (window lacks MAP) -> -inf
+    return check
+
+def add_map_direction(s, who, p):
+    """Score and blamed sensor with the direction check p added: the larger counts, and MAP is blamed when it wins."""
+    return np.maximum(s, p), np.where(p > s, CH.index("MAP"), who)
+
+def map_scorer(score0, s_cal0, B_cal, Dcal, a):
+    """An existing scorer (the stuck check) plus the MAP direction check. score(E, D, trips, B) needs B = map_bias(model, D)."""
+    check = map_direction(B_cal, Dcal, a.smooth, a.grace)
+    def score(E, D, trips, B=None):
+        return add_map_direction(*score0(E, D, trips), check(B, D["trip"]))
+    return score, np.maximum(s_cal0, check(B_cal, Dcal["trip"]))
 
 def auroc(y, s):
     return roc_auc_score(y, s) if 0 < y.sum() < len(y) else np.nan

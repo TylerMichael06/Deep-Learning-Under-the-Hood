@@ -21,6 +21,8 @@ Compared against: the pretrained model without fine-tuning, and a per-car linear
 
 Final settings (see model_build_guide.md, Step 7)
   - minute score = worst sensor's prediction error (averaged over 2 minutes) or the stuck-sensor check, whichever is larger
+  - plus the MAP direction check (issue #32): MAP's signed error averaged over 2 minutes, counted only beyond this car's
+    calibration 99th percentile (blames MAP when it wins)
   - alarm line = 90th percentile of the car's calibration scores ("Relaxed")
   - no alarms in the first 5 minutes of a drive (warm-up)
   - a drive is FAULT if more than 30% of its minutes are flagged; drives with under 1 minute after the warm-up are
@@ -40,7 +42,7 @@ from .config import CH, DT, W, FAULTY_CARS, FINAL_SCORING, KAGGLE_DATA, RESULTS,
 from .data import load_kaggle, load_ved
 from .features import PHYSICS, windows
 from .model import resolve_device, channel_errors, ridge_errors
-from .scoring import calibrate, slow_stuck_scorer, auroc
+from .scoring import calibrate, slow_stuck_scorer, auroc, map_bias, map_scorer, MAP_SCORING
 from .faults import ALL_FAULTS, inject
 from .train import prepare_car, save_final
 
@@ -60,16 +62,21 @@ def evaluate_car(unit, trips, a):
     rows, summ = [], []
     for name, errs in methods.items():
         Es = errs([Dcal, Dclean] + list(fault_sets.values()))
+        net = {"pretrained only": base, "fine-tuned (ours)": tuned}.get(name)          # MAP checks need the network (not ridge)
+        Bs = [map_bias(net, d) for d in [Dcal, Dclean] + list(fault_sets.values())] if net else [None] * len(Es)
         clean_ok = ~Dclean["code"]
-        # "stuck check" is the final scoring; the other two are compared in the results (two-speed = EXPERIMENT, not kept)
-        for scoring in ("shared cutoff", "stuck check", "two-speed + stuck check"):
+        # MAP_SCORING ("stuck check + MAP direction") is the final scoring; the others are compared in the results
+        # (two-speed = EXPERIMENT, not kept). Ridge has no network to give MAP's signed error, so for ridge it is the stuck check.
+        for scoring in ("shared cutoff", "stuck check", "two-speed + stuck check", MAP_SCORING):
             if scoring == "shared cutoff":
-                sc, s_cal = calibrate(Es[0], Dcal["trip"], a.smooth); score = lambda E, D_, trips_: sc(E, D_["trip"])
+                sc, s_cal = calibrate(Es[0], Dcal["trip"], a.smooth); score = lambda E, D_, trips_, B=None: sc(E, D_["trip"])
             else:
-                score, s_cal = slow_stuck_scorer(Es[0], Dcal, P["cal_trips"], a, use_slow=scoring != "stuck check")
-            s_clean, _ = score(Es[1], Dclean, test_trips)
+                score, s_cal = slow_stuck_scorer(Es[0], Dcal, P["cal_trips"], a, use_slow=scoring == "two-speed + stuck check")
+                if scoring == MAP_SCORING and net: score, s_cal = map_scorer(score, s_cal, Bs[0], Dcal, a)
+            s_clean, _ = score(Es[1], Dclean, test_trips, Bs[1])
             real = auroc(Dclean["code"].astype(int), s_clean) if Dclean["code"].any() else np.nan
-            scored = [(f, Df, *score(E, Df, fault_trips[f]), minute(Df) >= a.grace) for (f, Df), E in zip(fault_sets.items(), Es[2:])]
+            scored = [(f, Df, *score(E, Df, fault_trips[f], B), minute(Df) >= a.grace)
+                      for (f, Df), E, B in zip(fault_sets.items(), Es[2:], Bs[2:])]
             # Only judged data is scored: minutes after the warm-up, and drives with at least a.min_judge windows
             # (1 minute) after the warm-up. Shorter drives are "too short to judge" and counted separately.
             warm_c, trip_c = warm_clean[clean_ok], Dclean["trip"][clean_ok]
@@ -189,6 +196,10 @@ def main():
     print(f"\n=== injected faults, mean over held-out cars (cutoff {q0}) ===\n",
           R0.groupby(["fault", "method"])[["AUROC", "window_detection", "drive_detection", "blamed_right_sensor"]].mean().round(3).to_string())
     print(f"\n=== overall (cutoff {q0}) ===\n", R0.groupby("method")[["AUROC", "window_detection", "drive_detection", "blamed_right_sensor", "false_alarm_rate"]].mean().round(3).to_string())
+    RM = R[(R.cutoff == q0) & (R.drive_rule == a.drive_rules[0]) & (R.method == "fine-tuned (ours)") & R.scoring.isin(["stuck check", MAP_SCORING])]
+    for m in ("AUROC", "drive_detection", "blamed_right_sensor", "false_alarm_rate"):   # one table per metric, scorings side by side
+        print(f"\n=== issue #32: {m}, previous final (stuck check) vs {MAP_SCORING} (fine-tuned, cutoff {q0}) ===\n",
+              RM.groupby(["fault", "scoring"])[m].mean().unstack().round(3).to_string())
     print("\n=== binary classifier (FAULT = positive), all cars and faults pooled, every cutoff ===")
     B = binary_report(R); print(B.round(3).to_string(index=False))
     print("saved", save_csv(R, "obd_results_faults.csv"), save_csv(S, "obd_results_summary.csv"), save_csv(B, "obd_results_binary.csv"))
