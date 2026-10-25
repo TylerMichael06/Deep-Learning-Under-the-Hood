@@ -3,6 +3,7 @@ import argparse, os
 import numpy as np, pandas as pd
 
 # settings for a fast run: 1 training epoch; two cutoffs / drive rules so the comparison loops still run
+# season_alpha=0.5 makes the smoke tests exercise the season correction path; the model's default is off (0.0)
 EVAL_ARGS = argparse.Namespace(epochs=1, ft_epochs=1, smooth=12, cutoffs=[0.90, 0.95], min_judge=6, drive_rules=[0.3, 0.5],
                                grace=5, smooth_long=60, min_flat=5, cusum_k=0.5, season_alpha=0.5)
 SYN_ARGS = argparse.Namespace(epochs=1, ft_epochs=1, smooth=12, smooth_long=60, graces=[5, 0], min_flat=5, cutoff=0.90,

@@ -31,6 +31,9 @@ already learned part of the effect. With α = 0.5, KIT in normal order catches m
 45% → 68%; drift 87% → 87% and 39% → 90%) with no clean drive flagged, and the Kaggle MAF cars are unchanged.
 α = 0.5 is chosen on the only car with cold data; it is presented as "half the ideal-gas correction".
 
+**Outcome:** the bar failed (see `docs/model_build_guide.md`, Step 10, item 9). The correction ships off
+(`SEASON_ALPHA = 0.0`); `--season-alpha 0.5` reproduces the test.
+
 ## Design
 
 ### 1. Correction in `drive_gaps` (`scoring.py`)

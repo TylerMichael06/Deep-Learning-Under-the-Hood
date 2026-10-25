@@ -457,7 +457,7 @@ for every combination, so the numbers compare fairly.
 - Only 15 healthy cars of training data (several with very little driving), logged every ~4-12 s over Bluetooth
 - Assumes the fine-tune/calibration drives are healthy
 - The MAF drive check assumes a healthy car's drive-to-drive gap varies by at least 2%, and needs a few calibration drives
-- The MAF season correction (half the ideal-gas air-density effect) was chosen on one car, the only one with cold-weather drives
+- A season (air-density) correction for the MAF drive gap was tested and not adopted (Step 10, item 9); seasonal effects remain open, including on the minute score after a winter calibration
 
 
 ## Step 13: Using it on your own car (final step, not built yet)
