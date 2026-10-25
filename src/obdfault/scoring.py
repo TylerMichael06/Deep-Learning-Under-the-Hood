@@ -135,13 +135,31 @@ def confirm_bias(regular, combined):
 GAP_Z = 3                  # a drive is FAULT if its gap is more than 3 of this car's normal spreads below its usual level
 MIN_GAP_DRIVES = 3         # calibration drives with a gap needed to learn the car's usual level and spread
 MIN_SPREAD = 0.02          # assumed: a healthy car's drive-to-drive gap varies by at least 2% (few calibration drives)
+# EXPERIMENT (issue #33): season correction. Cold air is denser, so a healthy MAF reads higher in winter than a model
+# that never saw cold air expects (ideal gas: about 0.35% per degree C). Chosen on the KIT car (the only one with cold
+# data): half the ideal-gas correction, because the fine-tuned model already learns part of the effect.
+SEASON_ALPHA = 0.5
+IAT_KELVIN = 273.15
 
-def drive_gaps(P, D, c, mu, sd, use, min_windows, floor=0.5):
+def intake_ref(D, mu, sd, use):
+    """Median intake air temperature (Kelvin) over the windows in `use` that have an intake reading; None if none do."""
+    i = CH.index("IAT"); ok = use & (D["m"][:, i].numpy() > 0)
+    if not ok.any(): return None
+    return float(np.median(D["x"][ok][:, :, i].numpy() * sd[i] + mu[i])) + IAT_KELVIN
+
+def drive_gaps(P, D, c, mu, sd, use, min_windows, floor=0.5, t_ref=None, alpha=SEASON_ALPHA):
     """Per drive: sum(measured) / sum(predicted) - 1 for sensor c over the windows in `use`. Signed and taken over the
     whole drive, so random prediction misses cancel out but a steady bias doesn't. `floor` (g/s for MAF) keeps idle
-    predictions near 0 from blowing up the ratio. Drives with fewer than `min_windows` usable windows are left out."""
+    predictions near 0 from blowing up the ratio. Drives with fewer than `min_windows` usable windows are left out.
+    With t_ref (Kelvin, intake_ref of the calibration windows), each reading is first multiplied by
+    ((intake temp + 273.15) / t_ref) ** alpha (season correction); windows without an intake reading are not corrected.
+    t_ref=None or alpha=0 gives the uncorrected gap."""
     ok = use & ~np.isnan(P[:, 0])
     meas = D["x"][ok][:, :, c].numpy() * sd[c] + mu[c]; pred = np.maximum(P[ok] * sd[c] + mu[c], floor)
+    if t_ref is not None and alpha:
+        i = CH.index("IAT"); has = D["m"][ok][:, i].numpy() > 0
+        temp = D["x"][ok][:, :, i].numpy() * sd[i] + mu[i] + IAT_KELVIN
+        meas = meas * np.where(has[:, None], (temp / t_ref) ** alpha, 1.0)
     g = pd.DataFrame(dict(trip=D["trip"][ok], m=meas.sum(1), p=pred.sum(1), n=1)).groupby("trip").sum()
     g = g[g.n >= min_windows]; return g.m / g.p - 1
 

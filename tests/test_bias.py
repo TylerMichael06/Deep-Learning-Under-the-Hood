@@ -173,3 +173,46 @@ def test_with_gap_adds_maf_gap_alarms_and_keeps_drives_without_a_gap():
     gap = pd.Series([True, False, False], index=[0, 1, 2])           # drive 3 has no gap value (e.g. too few MAF windows)
     assert with_gap(verdict, gap).tolist() == [True, True, False, False]
     assert with_gap(verdict, None).equals(verdict)                   # car without the gap check
+
+
+def _gap_drive(maf, iat, n=20, has_iat=True):
+    """One drive of n windows with constant MAF and intake-temp readings (raw units: mu = 0, sd = 1)."""
+    from obdfault.config import W
+    x = torch.zeros(n, W, len(CH)); x[:, :, MAF] = maf; x[:, :, IAT] = iat
+    m = torch.zeros(n, len(CH)); m[:, MAF] = 1; m[:, IAT] = float(has_iat)
+    return dict(x=x, m=m, trip=np.zeros(n, int), start=np.arange(n) * 2)
+
+
+def _gap(D, **kw):
+    from obdfault.config import W
+    from obdfault.scoring import drive_gaps
+    n = len(D["trip"]); P = np.full((n, W), 10.0)               # the model predicts 10 g/s throughout
+    return drive_gaps(P, D, MAF, np.zeros(len(CH)), np.ones(len(CH)), np.ones(n, bool), 6, **kw).iloc[0]
+
+
+def test_season_correction_changes_nothing_at_the_reference_temperature_or_when_off():
+    D = _gap_drive(maf=11.0, iat=20.0); plain = _gap(D)
+    assert np.isclose(plain, 0.1)                               # reads 10% high, no correction (t_ref=None)
+    assert np.isclose(_gap(D, t_ref=293.15, alpha=0.5), plain)  # drive at the reference temperature
+    assert np.isclose(_gap(D, t_ref=250.0, alpha=0), plain)     # alpha = 0: correction off
+
+
+def test_season_correction_removes_the_cold_air_density_effect():
+    ratio = 300.0 / 273.15                                      # air at 0 C is this much denser than at 26.85 C
+    D = _gap_drive(maf=10.0 * ratio, iat=0.0)                   # healthy MAF in cold air reads high by the density ratio
+    none, half, full = _gap(D), _gap(D, t_ref=300.0, alpha=0.5), _gap(D, t_ref=300.0, alpha=1.0)
+    assert np.isclose(none, ratio - 1) and abs(half) < abs(none) and np.isclose(full, 0, atol=1e-6)
+
+
+def test_season_correction_skips_windows_without_an_intake_reading():
+    D = _gap_drive(maf=11.0, iat=0.0, has_iat=False)
+    assert np.isclose(_gap(D, t_ref=300.0, alpha=1.0), _gap(D))
+
+
+def test_intake_ref_is_the_median_intake_temperature_in_kelvin():
+    from obdfault.scoring import intake_ref
+    D = _gap_drive(maf=10.0, iat=0.0, n=5); D["x"][:3, :, IAT] = 10.0; D["x"][3:, :, IAT] = 30.0
+    mu, sd = np.zeros(len(CH)), np.ones(len(CH))
+    assert np.isclose(intake_ref(D, mu, sd, np.ones(5, bool)), 283.15)
+    assert np.isclose(intake_ref(D, mu, sd, np.arange(5) >= 3), 303.15)     # only the windows in `use`
+    assert intake_ref(_gap_drive(maf=10.0, iat=0.0, has_iat=False), mu, sd, np.ones(20, bool)) is None
