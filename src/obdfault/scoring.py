@@ -136,9 +136,9 @@ GAP_Z = 3                  # a drive is FAULT if its gap is more than 3 of this 
 MIN_GAP_DRIVES = 3         # calibration drives with a gap needed to learn the car's usual level and spread
 MIN_SPREAD = 0.02          # assumed: a healthy car's drive-to-drive gap varies by at least 2% (few calibration drives)
 # EXPERIMENT (issue #33): season correction. Cold air is denser, so a healthy MAF reads higher in winter than a model
-# that never saw cold air expects (ideal gas: about 0.35% per degree C). Chosen on the KIT car (the only one with cold
-# data): half the ideal-gas correction, because the fine-tuned model already learns part of the effect.
-SEASON_ALPHA = 0.5
+# that never saw cold air expects (ideal gas: about 0.35% per degree C). Off by default: it did not pass the bar
+# (model_build_guide.md, Step 10, item 9). --season-alpha 0.5 (half the ideal-gas correction) reproduces the test.
+SEASON_ALPHA = 0.0
 IAT_KELVIN = 273.15
 
 def intake_ref(D, mu, sd, use):
