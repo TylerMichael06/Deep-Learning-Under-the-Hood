@@ -21,7 +21,7 @@ car9,0,clean,,,HEALTHY,HEALTHY,,
 car9,1,clean,,,HEALTHY,HEALTHY,,
 car9,2,Fuel trim +8% (vacuum leak),STFT1,0.0,FAULT,FAULT,STFT1,5.0
 car9,3,clean,,,HEALTHY,TOO SHORT,,
-car9,4,MAP reads +8 kPa from minute 5,MAP,5.0,FAULT,HEALTHY,STFT1,0.5
+car9,4,MAP reads +8 kPa from minute 5,MAP,5.0,FAULT,HEALTHY,MAP,0.5
 car9,5,clean,,,HEALTHY,HEALTHY,,
 car9,6,Throttle signal noisy (+/-5%),THROTTLE,0.0,FAULT,FAULT,THROTTLE,5.0
 car9,7,Fuel trim +8% (vacuum leak),STFT1,0.0,FAULT,FAULT,STFT1,5.0
@@ -38,25 +38,25 @@ car9,17,Fuel trim +8% (vacuum leak),STFT1,0.0,FAULT,TOO SHORT,STFT1,5.0
 car9,18,Fuel trim +8% (vacuum leak),STFT1,0.0,FAULT,FAULT,STFT1,5.0
 car9,19,clean,,,HEALTHY,FAULT,,
 car9,20,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,FAULT,IAT,5.5
-car9,21,MAP reads +8 kPa from minute 5,MAP,5.0,FAULT,HEALTHY,MAP,2.333333333333333
+car9,21,MAP reads +8 kPa from minute 5,MAP,5.0,FAULT,HEALTHY,MAP,2.0
 car8,0,Throttle signal noisy (+/-5%),THROTTLE,0.0,FAULT,FAULT,LOAD,11.0
 car8,1,clean,,,HEALTHY,HEALTHY,,
 car8,2,clean,,,HEALTHY,HEALTHY,,
-car8,3,"MAP reads +8 kPa from minute 5, engine reacts",MAP,5.0,FAULT,HEALTHY,LOAD,17.666666666666668
+car8,3,"MAP reads +8 kPa from minute 5, engine reacts",MAP,5.0,FAULT,HEALTHY,MAP,5.666666666666666
 car8,4,Throttle signal noisy (+/-5%),THROTTLE,0.0,FAULT,HEALTHY,SPEED,5.5
 car8,5,clean,,,HEALTHY,HEALTHY,,
-car8,6,Coolant sensor stuck from minute 10,ECT,10.0,FAULT,FAULT,ECT,2.166666666666666
+car8,6,Coolant sensor stuck from minute 10,ECT,10.0,FAULT,FAULT,ECT,2.333333333333334
 car8,7,clean,,,HEALTHY,HEALTHY,,
 exp2_car,0,clean,,,HEALTHY,HEALTHY,,
 exp2_car,1,clean,,,HEALTHY,TOO SHORT,,
 exp2_car,2,Throttle signal noisy (+/-5%),THROTTLE,0.0,FAULT,TOO SHORT,THROTTLE,5.0
-exp2_car,3,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,FAULT,IAT,7.0
+exp2_car,3,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,FAULT,IAT,7.166666666666667
 exp2_car,4,clean,,,HEALTHY,TOO SHORT,,
 exp2_car,5,MAF reads 15% low,MAF,0.0,FAULT,HEALTHY,IAT,8.0
 exp2_car,6,clean,,,HEALTHY,TOO SHORT,,
 exp2_car,7,Coolant sensor stuck from minute 10,ECT,10.0,FAULT,FAULT,ECT,2.333333333333334
 exp2_car,8,clean,,,HEALTHY,TOO SHORT,,
-exp2_car,9,MAF reads 15% low,MAF,0.0,FAULT,HEALTHY,SPEED,5.0
+exp2_car,9,MAF reads 15% low,MAF,0.0,FAULT,HEALTHY,THROTTLE,5.0
 exp2_car,10,Intake air temp drifts up to +20 C,IAT,0.0,FAULT,FAULT,IAT,5.333333333333333
 exp2_car,11,MAF reads 15% low,MAF,0.0,FAULT,FAULT,IAT,5.0
 exp2_car,12,clean,,,HEALTHY,TOO SHORT,,

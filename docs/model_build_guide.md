@@ -128,7 +128,13 @@ The final general model (`obd_pretrained.pt`) is pretrained once on **all** heal
    network barely notices it. For the slow sensors (coolant and intake temperature) we count how many minutes the reading
    has not changed at all, divided by the longest freeze seen on this car's calibration drives (at least 5 minutes).
    Both parts are rescaled on the calibration drives so they share one alarm line; the larger one counts.
-5. **Minute score** = the worst sensor's value (or the stuck check, if larger). That sensor is the one the model **blames**.
+5. **MAP direction check** (`map_bias`, `map_direction`): a manifold-pressure sensor that reads a few kPa high looks
+   normal to the squared error in step 1, because squaring drops the direction and MAP's normal error is large whenever
+   the throttle moves. This check keeps the sign: MAP's error (logged - predicted), z-scored on the calibration drives
+   and averaged over 2 minutes. Normal errors point both ways and cancel out; an offset doesn't. It only counts beyond
+   the 99th percentile of this car's calibration minutes, so it leaves the alarm line for the other sensors where it was.
+6. **Minute score** = the worst sensor's value (or the stuck check or MAP direction check, if larger). That sensor is
+   the one the model **blames**.
 
 ---
 
@@ -138,7 +144,7 @@ The final general model (`obd_pretrained.pt`) is pretrained once on **all** heal
 |---|---|---|
 | Alarm cutoff | **Relaxed**: 90th percentile of the car's calibration scores | catches more faulty drives (61% -> 67% of judged drives) for a small rise in false alarms (6% -> 9%); the Medium line (95th percentile) was used before |
 | Cutoff type | **one shared cutoff** for all sensors | per-sensor cutoffs did not help overall and were worse on real codes |
-| Scoring | **2-minute score + stuck-sensor check** | best on both tests (see Step 10) |
+| Scoring | **2-minute score + stuck-sensor check + MAP direction check** | best on both tests (see Step 10) |
 | Warm-up grace | **5 minutes**: no alarms in the first 5 min of a drive, and those minutes are not used to set the cutoff | cold starts caused many false alarms |
 | Drive rule | a drive is **FAULT if more than 30% of its minutes** are flagged | compared 20/30/40/50% (main test, before the warm-up rule): faulty drives caught 57/50/47/44%, clean drives flagged 27/18/17/15%. 30% gives the biggest drop in false alarms for the smallest loss in catches |
 | Physics inputs | **not used** | tested; small gain on air faults but more false alarms (see Step 10) |
@@ -168,16 +174,18 @@ Both tests below use exactly these settings.
 
 | Method | AUROC |
 |---|---|
-| **Fine-tuned Transformer (ours)** | **0.81** |
-| Same network, no per-car fine-tuning | 0.77 |
+| **Fine-tuned Transformer (ours)** | **0.83** |
+| Same network, no per-car fine-tuning | 0.79 |
 | Ridge baseline | 0.77 |
+
+(The ridge baseline has no network to give MAP's signed error, so it is scored without the MAP direction check.)
 
 **Binary scores, ours, final settings:**
 
 | Level | Accuracy | Precision | Recall | F1 | False alarms |
 |---|---|---|---|---|---|
-| Per minute | 0.79 | 0.85 | 0.69 | 0.76 | 12% |
-| **Per drive (>30% rule)** | **0.79** | **0.88** | **0.67** | **0.76** | **9%** |
+| Per minute | 0.81 | 0.86 | 0.74 | 0.79 | 13% |
+| **Per drive (>30% rule)** | **0.82** | **0.88** | **0.74** | **0.80** | **10%** |
 
 Too short to judge: 212 of 796 faulty drive copies (27%) and 25 of 99 clean test drives (25%).
 For comparison, the same model with the old settings (Medium line, short drives counted as misses) caught 44% of all faulty drives.
@@ -186,21 +194,21 @@ For comparison, the same model with the old settings (Medium line, short drives 
 
 | Fault | AUROC | Drives caught | Right sensor |
 |---|---|---|---|
-| Fuel trim +10% (vacuum leak) | 0.97 | 98% | 97% |
-| Coolant sensor stuck | 0.96 | 95% | 99% |
-| Intake air temp +15 °C | 0.85 | 79% | 82% |
-| MAF -25%, engine reacts (realistic) | 0.91 | 72% | 9%* |
-| MAP +10 kPa, engine reacts (realistic) | 0.85 | 67% | 2%* |
-| Throttle signal noisy | 0.83 | 64% | 49% |
-| MAF -25% (sensor only) | 0.78 | 58% | 57% |
-| Coolant warms at half speed (thermostat) | 0.68 | 42% | 72% |
-| MAF drifts to -30% | 0.61 | 36% | 31% |
-| MAP +10 kPa (sensor only) | 0.58 | 12% | 17% |
+| Fuel trim +10% (vacuum leak) | 0.97 | 98% | 94% |
+| Coolant sensor stuck | 0.95 | 95% | 98% |
+| Intake air temp +15 °C | 0.85 | 89% | 75% |
+| MAP +10 kPa, engine reacts (realistic) | 0.89 | 87% | 30%* |
+| MAP +10 kPa (sensor only) | 0.79 | 80% | 91% |
+| MAF -25%, engine reacts (realistic) | 0.90 | 72% | 7%* |
+| Throttle signal noisy | 0.82 | 72% | 49% |
+| MAF -25% (sensor only) | 0.77 | 56% | 57% |
+| Coolant warms at half speed (thermostat) | 0.68 | 43% | 68% |
+| MAF drifts to -30% | 0.61 | 31% | 30% |
 
-\* For the realistic air faults the model blames the **fuel trim**, which is where the fault really shows up;
+\* For the realistic air faults the model mostly blames the **fuel trim**, which is where the fault really shows up;
 a mechanic would read it the same way (a lean/rich trim points to the air sensor), but it counts as "wrong sensor" here.
 
-**Real trouble codes (car13):** AUROC 0.66 (other methods 0.54-0.57).
+**Real trouble codes (car13):** AUROC 0.63 (other methods 0.54-0.55; 0.66 before the MAP direction check).
 
 ---
 
@@ -230,6 +238,10 @@ a mechanic would read it the same way (a lean/rich trim points to the air sensor
 | **Per drive** | **0.76** | **0.89** | **0.74** | **0.81** | **20%*** |
 
 \* 3 of only 15 judged clean drives, so this percentage is unstable.
+
+The MAP direction check changed no drive verdict here. It raised the share of flagged minutes on the MAP drives
+(e.g. car9's +8 kPa sensor-only drive from 16% to 28%, car8's realistic one from 8% to 21%), but none crossed the 30%
+rule: these faults are smaller (8 kPa) and start at minute 5, and the warm-up minutes count in the drive's share.
 
 **Run-to-run variation:** training on the CPU is not perfectly repeatable, so re-running the same test gives
 slightly different numbers (about ±0.03; e.g. an earlier run of the same settings gave per-drive F1 0.73).
@@ -263,7 +275,7 @@ for every combination, so the numbers compare fairly.
 | Configuration | Main AUROC | Main F1 (drive) | Main false alarms | Synthetic F1 (drive) | Synthetic false alarms |
 |---|---|---|---|---|---|
 | Before the fixes | 0.79 | 0.55 | 3% | 0.66 | 4% |
-| **+ stuck check (FINAL)** | **0.81** | **0.59** | **4%** | **0.69** | **7%** |
+| **+ stuck check (final until issue #32)** | **0.81** | **0.59** | **4%** | **0.69** | **7%** |
 | + two-speed alarm + stuck check | 0.83 | 0.61 | 9% | 0.67 | 15% |
 | + physics inputs | 0.79 | 0.58 | 7% | 0.69 | 7% |
 | + physics + stuck check | 0.81 | 0.61 | 5% | 0.68 | 11% |
@@ -287,6 +299,37 @@ for every combination, so the numbers compare fairly.
 | Synthetic test | 0.95 → 0.92 | 0.50 → 0.55 | 0.66 → 0.69 | 0.69 → 0.70 | 4% → 7% |
 
 (Physics rows come from a separate run; given the ±0.03 run-to-run variation, differences of 0.01-0.02 are not meaningful.)
+
+### Later fix: manifold pressure (issue #32)
+
+A MAP sensor reading 10 kPa high was the hardest fault (AUROC 0.58, 12% of drives caught): the squared error drops the
+direction of the miss, and MAP's normal error is large whenever the throttle moves. Two checks were tried, both on the
+same trained models, so the comparison is exact:
+
+1. **MAP direction check** (Step 6, point 5): **kept.**
+2. **Idle MAP check**: MAP while stopped at idle, compared with the car's usual idle MAP from its calibration drives.
+   **Dropped**: it raised minute false alarms on car1 from 5% to 41% and on car13 from 19% to 68%, and pushed car13's
+   real-code AUROC to 0.51. Idle MAP shifts between the calibration and test periods more than expected.
+
+| Main evaluation, fine-tuned | Stuck check (before) | + MAP direction (final) |
+|---|---|---|
+| Per drive F1 | 0.75 | **0.80** |
+| Per drive recall | 0.65 | **0.74** |
+| Per drive false alarms | 8.7% | 9.9% |
+| Per minute false alarms | 11.5% | 12.7% |
+| MAP +10 kPa sensor only: AUROC / drives caught / right sensor | 0.58 / 12% / 16% | **0.79 / 80% / 91%** |
+| MAP +10 kPa, engine reacts: AUROC / drives caught / right sensor | 0.85 / 67% / 2% | **0.89 / 87% / 30%** |
+| Real trouble codes (car13) AUROC | 0.66 | 0.63 |
+
+- Every other fault's AUROC stays within 0.01.
+- The extra false alarms are mostly on car13 (one more clean drive flagged, 1 of 5) and car4 (more flagged minutes, no
+  change in drive verdicts).
+- The two cars that don't log fuel trim now catch the realistic MAP fault too: car1 on 7 of 10 drives, car8 on 4 of 8
+  (none before).
+- When intake temperature or throttle is faulty, the MAP prediction is pulled off too, so the check sometimes fires and
+  blames MAP: more of those drives are caught (intake temp 76% -> 89%, throttle 59% -> 72%), but the named sensor is
+  wrong more often.
+- Synthetic test: no drive verdict changed (see Step 9).
 
 ---
 
@@ -325,6 +368,7 @@ for every combination, so the numbers compare fairly.
 - The realistic air faults assume half of the fuel error stays visible in the short-term fuel trim
 - Only 15 healthy cars of training data (several with very little driving), logged every ~4-12 s over Bluetooth
 - Assumes the fine-tune/calibration drives are healthy
+- The MAP direction check can blame MAP when another air-path sensor (intake temp, throttle) is the faulty one
 
 
 ## Step 13: Using it on your own car (final step, not built yet)

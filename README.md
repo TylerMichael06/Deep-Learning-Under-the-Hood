@@ -12,7 +12,9 @@ Model by Hoda; step-by-step details in [`docs/model_build_guide.md`](docs/model_
 3. It learned what "normal" looks like from 15 healthy cars in the Kaggle OBD-II dataset.
 4. A prediction that is far off means something doesn't fit. That gap is the alarm score.
 5. A stuck-sensor check flags coolant/intake-temp readings frozen for longer than the car ever showed normally.
-6. A minute is FAULT if its score crosses the car's alarm line (the "Relaxed" line: the 90th percentile of the car's
+6. A direction check flags manifold pressure (MAP) when its prediction misses keep pointing the same way for 2 minutes,
+   which is how a sensor reading a few kPa high looks.
+7. A minute is FAULT if its score crosses the car's alarm line (the "Relaxed" line: the 90th percentile of the car's
    own normal scores). A drive is FAULT if more than 30% of its minutes are flagged, ignoring the first 5 minutes
    (warm-up). Drives with less than 1 minute after the warm-up (~6 min in total) are marked TOO SHORT to judge.
 
@@ -23,14 +25,15 @@ next 20%, and is tested on the last 40%.
 
 | Test | AUROC | Precision | Recall | F1 | False alarms |
 |---|---|---|---|---|---|
-| Main evaluation (8 cars), per drive | 0.81 | 0.88 | 0.67 | 0.76 | 9% |
+| Main evaluation (8 cars), per drive | 0.83 | 0.88 | 0.74 | 0.80 | 10% |
 | Synthetic test (67 drives), per drive | 0.75 | 0.89 | 0.74 | 0.81 | 20%* |
 
 Scores are on drives long enough to judge (about 1 in 4 test drives is too short).
 \* 3 of only 15 judged clean drives in the synthetic test.
 
-Baselines (same network without fine-tuning, per-car linear model): AUROC 0.77. Results vary by about ±0.03 between runs.
-Strongest on vacuum leaks and stuck coolant sensors (AUROC 0.96-0.97); weakest on small, steady airflow/pressure errors.
+Baselines: same network without fine-tuning AUROC 0.79, per-car linear model 0.77. Results vary by about ±0.03 between runs.
+Strongest on vacuum leaks and stuck coolant sensors (AUROC 0.95-0.97); weakest on slow airflow drift and thermostat faults.
+The MAP direction check (issue #32) raised a MAP sensor reading 10 kPa high from 12% to 80% of drives caught.
 
 Full details, settings, assumptions and limitations: [`docs/model_build_guide.md`](docs/model_build_guide.md).
 
