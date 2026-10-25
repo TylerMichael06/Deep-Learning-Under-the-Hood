@@ -21,7 +21,8 @@ from .config import CH, DT, W, KAGGLE_DATA, RESULTS
 from .data import load_kaggle
 from .features import PHYSICS, windows
 from .model import resolve_device, channel_errors, channel_preds
-from .scoring import calibrate, unit_scale, flat_minutes, FLAT_SENSORS, bias_scorer, drive_gaps, gap_z, GAP_Z, MIN_GAP_DRIVES
+from .scoring import (calibrate, unit_scale, flat_minutes, FLAT_SENSORS, bias_scorer, drive_gaps, gap_z, GAP_Z, MIN_GAP_DRIVES,
+                      intake_ref, SEASON_ALPHA)
 from .faults import maf_reacts, map_reacts
 from .train import prepare_car
 
@@ -123,7 +124,9 @@ def test_car(unit, trips, a, rng):
     key = pd.DataFrame(key).assign(car=unit, truth=lambda k: np.where(k.fault == "clean", "HEALTHY", "FAULT"))
     # EXPERIMENT (issue #33): the MAF drive gap per test drive (see obdfault.evaluate.maf_gap_scores); False without the check
     j, g0 = CH.index("MAF"), max(a.graces)
-    gap = lambda D_: drive_gaps(channel_preds(P["tuned"], D_, j), D_, j, P["mu"], P["sd"], (D_["start"] + W) / STEPS_PER_MIN >= g0, 6)
+    use = lambda D_: (D_["start"] + W) / STEPS_PER_MIN >= g0
+    t_ref = intake_ref(Dc, P["mu"], P["sd"], use(Dc))             # season correction relative to the calibration drives
+    gap = lambda D_: drive_gaps(channel_preds(P["tuned"], D_, j), D_, j, P["mu"], P["sd"], use(D_), 6, t_ref=t_ref, alpha=a.season_alpha)
     g_cal = gap(Dc)
     z = gap_z(g_cal)(gap(D)) if len(g_cal) >= MIN_GAP_DRIVES else pd.Series(dtype=float)
     key["gap_fault"] = [bool(z.get(k, np.nan) > GAP_Z) for k in key.drive]
@@ -207,6 +210,8 @@ def main():
     ap.add_argument("--min-flat", type=float, default=5, help="stuck check: never flag a freeze shorter than this (minutes)")
     ap.add_argument("--cusum-k", type=float, default=0.5,
                     help="EXPERIMENT (issue #33), 'stuck check + bias' variant: allowance per window in the bias running total")
+    ap.add_argument("--season-alpha", type=float, default=SEASON_ALPHA,
+                    help="experiment (issue #33): share of the air-density (season) correction applied to the MAF drive gap (0 = off)")
     ap.add_argument("--physics", action="store_true", help="add the physics inputs (not used in the final model)")
     ap.add_argument("--tag", default="", help="added to output file names, e.g. _physics")
     ap.add_argument("--device", choices=["cpu", "mps", "cuda", "auto"], default="cpu",

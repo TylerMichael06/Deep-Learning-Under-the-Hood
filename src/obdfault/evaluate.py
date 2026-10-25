@@ -40,7 +40,8 @@ from .config import CH, DT, W, DATA, FAULTY_CARS, FINAL_SCORING, KAGGLE_DATA, RE
 from .data import load_kaggle, load_ved, load_kit
 from .features import PHYSICS, windows
 from .model import resolve_device, channel_errors, channel_preds, ridge_errors
-from .scoring import calibrate, slow_stuck_scorer, auroc, confirm, confirm_bias, drive_gaps, gap_z, cusum, GAP_Z, MIN_GAP_DRIVES, with_gap
+from .scoring import (calibrate, slow_stuck_scorer, auroc, confirm, confirm_bias, drive_gaps, gap_z, cusum, GAP_Z, MIN_GAP_DRIVES,
+                      with_gap, intake_ref, SEASON_ALPHA)
 from .faults import ALL_FAULTS, FAULTS_SEQ, inject
 from .train import prepare_car, save_final
 
@@ -134,7 +135,9 @@ def maf_gap_scores(P, fault_sets, has, a):
     None if the car has no MAF or fewer than MIN_GAP_DRIVES calibration drives with a gap."""
     j = CH.index("MAF"); tuned, mu, sd = P["tuned"], P["mu"], P["sd"]
     if not has[j]: return None
-    gap = lambda D_: drive_gaps(channel_preds(tuned, D_, j), D_, j, mu, sd, (D_["start"] + W) * DT / 60 >= a.grace, a.min_judge)
+    use = lambda D_: (D_["start"] + W) * DT / 60 >= a.grace
+    t_ref = intake_ref(P["Dcal"], mu, sd, use(P["Dcal"]))       # season correction relative to the calibration drives
+    gap = lambda D_: drive_gaps(channel_preds(tuned, D_, j), D_, j, mu, sd, use(D_), a.min_judge, t_ref=t_ref, alpha=a.season_alpha)
     g_cal = gap(P["Dcal"])
     if len(g_cal) < MIN_GAP_DRIVES: return None
     z = gap_z(g_cal)
@@ -231,6 +234,8 @@ def main():
     ap.add_argument("--ltft", action="store_true", help="experiment: add long-term fuel trim (bank 1) as a 10th sensor")
     ap.add_argument("--kit", action="store_true",
                     help="experiment (issue #33): add the KIT car (data/public/kit-obd2, 81 drives) as an extra held-out test car")
+    ap.add_argument("--season-alpha", type=float, default=SEASON_ALPHA,
+                    help="experiment (issue #33): share of the air-density (season) correction applied to the MAF drive gap (0 = off)")
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--device", choices=["cpu", "mps", "cuda", "auto"], default="cpu",
                     help="Transformer backend (default: cpu; auto prefers CUDA, then MPS, then CPU)")
