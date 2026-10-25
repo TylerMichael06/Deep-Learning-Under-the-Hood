@@ -37,7 +37,7 @@ Writes obd_results_faults.csv, obd_results_summary.csv, obd_results_binary.csv t
 import argparse, os, time
 import numpy as np, pandas as pd
 from .config import CH, DT, W, DATA, FAULTY_CARS, FINAL_SCORING, KAGGLE_DATA, RESULTS, add_ltft
-from .data import load_kaggle, load_ved, load_kit
+from .data import load_kaggle, load_ved, load_kit, kit_winter_first
 from .features import PHYSICS, windows
 from .model import resolve_device, channel_errors, channel_preds, ridge_errors
 from .scoring import (calibrate, slow_stuck_scorer, auroc, confirm, confirm_bias, drive_gaps, gap_z, cusum, GAP_Z, MIN_GAP_DRIVES,
@@ -234,6 +234,9 @@ def main():
     ap.add_argument("--ltft", action="store_true", help="experiment: add long-term fuel trim (bank 1) as a 10th sensor")
     ap.add_argument("--kit", action="store_true",
                     help="experiment (issue #33): add the KIT car (data/public/kit-obd2, 81 drives) as an extra held-out test car")
+    ap.add_argument("--kit-winter", action="store_true",
+                    help="experiment (issue #33): add the KIT car fine-tuned and calibrated on its winter drives and tested on its "
+                         "summer drives (season test)")
     ap.add_argument("--season-alpha", type=float, default=SEASON_ALPHA,
                     help="experiment (issue #33): share of the air-density (season) correction applied to the MAF drive gap (0 = off)")
     ap.add_argument("--quick", action="store_true")
@@ -253,9 +256,11 @@ def main():
     if a.ved:
         ved = load_ved(a.ved, a.ved_pretrain, a.ved_test); trips += ved
         if not a.cars: cars += sorted({t["unit"] for t in ved if t["test_only"]})
-    if a.kit:
-        kit = load_kit(os.path.join(DATA, "public", "kit-obd2", "OBD-II-Dataset.zip")); trips += kit
-        if not a.cars: cars.append(kit[0]["unit"])
+    if a.kit or a.kit_winter:
+        kit = load_kit(os.path.join(DATA, "public", "kit-obd2", "OBD-II-Dataset.zip"))
+        extra = (kit if a.kit else []) + (kit_winter_first(kit) if a.kit_winter else [])
+        trips += extra
+        if not a.cars: cars += sorted({t["unit"] for t in extra})
     if a.quick and not a.cars: cars = cars[:1] + [c for c in cars if c.startswith("ved")][:1]
     if a.final_only: return save_final(trips, a, t0)
     all_rows, all_summ, all_gap = [], [], []

@@ -19,4 +19,5 @@ The repo is public, and so is everything committed here:
 - keep each file under 100 MB (GitHub rejects bigger files); split long logs by drive.
 - **KIT "Automotive OBD-II Dataset"** by Marc Weber (KIT, CC BY 4.0): <https://doi.org/10.35097/1130>. One car (Seat Leon),
   81 drives over 9 months, 7 of our 9 sensors. Download the archive, take `data/dataset/OBD-II-Dataset.zip` out of it and
-  put it (still zipped) in `public/kit-obd2/`. Only used by `python -m obdfault.evaluate --kit` (issue #33 experiment).
+  put it (still zipped) in `public/kit-obd2/`. Only used by `python -m obdfault.evaluate --kit` and `--kit-winter`
+  (issue #33 experiments; `--kit-winter` calibrates the car on its winter drives and tests it on its summer drives).

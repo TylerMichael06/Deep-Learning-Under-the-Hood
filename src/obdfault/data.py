@@ -109,6 +109,18 @@ def load_kit(path, unit="kit_leon"):
             trips.append(dict(unit=unit, order=pd.Timestamp(date).timestamp() + np.nanmin(t), test_only=True, **tr))
     return trips
 
+def kit_winter_first(kit, unit="kit_winter"):
+    """EXPERIMENT (issue #33, --kit-winter): the KIT car as if its first drives were in winter, to test the season
+    correction. Feb-Mar 2018 drives come first (fine-tune + calibration); April is dropped; the latest Jul-Aug 2017 drives
+    are kept while their driving time is at most 0.6 x the winter driving time, and moved one year later (test drives).
+    Returns new drives with `unit` renamed; the input is not changed."""
+    month = lambda t: pd.Timestamp(t["order"], unit="s").strftime("%Y-%m")
+    winter = [dict(t, unit=unit) for t in kit if month(t) in ("2018-02", "2018-03")]
+    summer = sorted((t for t in kit if month(t).startswith("2017")), key=lambda t: t["order"])
+    n_winter = sum(len(t["X"]) for t in winter)
+    while summer and sum(len(t["X"]) for t in summer) > 0.6 * n_winter: summer.pop(0)   # keep the latest summer drives
+    return winter + [dict(t, unit=unit, order=t["order"] + 365 * 86400) for t in summer]
+
 def resample(g):
     """Put one trip on a 5 s grid. A value is kept only if a real reading is within 12 s of the grid point."""
     g = g.dropna(subset=["t"]); t = g.t.to_numpy(float)

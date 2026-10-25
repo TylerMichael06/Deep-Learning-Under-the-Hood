@@ -2,7 +2,7 @@
 import numpy as np, torch
 from synthdata import EVAL_ARGS, SYN_ARGS, make_trips, write_kaggle_csvs
 from obdfault.config import CH
-from obdfault.data import load_kaggle, load_kit
+from obdfault.data import load_kaggle, load_kit, kit_winter_first
 from obdfault.features import PHYSICS
 from obdfault.evaluate import evaluate_car, binary_report
 from obdfault.synthetic import FINAL_VARIANT, decide, test_car as run_synthetic_car   # renamed so pytest doesn't collect it
@@ -40,6 +40,23 @@ def test_load_kit_reads_the_zip(tmp_path):
     have = ~np.isnan(trips[0]["X"]).all(0)
     assert [c for c, h in zip(CH, have) if h] == ["RPM", "SPEED", "THROTTLE", "ECT", "IAT", "MAP", "MAF"]
     assert trips[1]["order"] - trips[0]["order"] == 86400 - 300 - 8 * 3600   # order = date + start time of day
+
+
+def test_kit_winter_first_calibrates_in_winter_and_tests_in_summer():
+    import pandas as pd
+    day = lambda s: pd.Timestamp(s).timestamp()
+    drive = lambda date, n=100: dict(unit="kit_leon", order=day(date), test_only=True, X=np.zeros((n, len(CH))))
+    kit = ([drive(f"2017-07-0{d}") for d in (1, 2, 3)] + [drive(f"2017-08-0{d}") for d in (1, 2)]
+           + [drive(f"2018-02-0{d}") for d in (1, 2, 3)] + [drive(f"2018-03-0{d}") for d in (1, 2)] + [drive("2018-04-01")])
+    out = kit_winter_first(kit)
+    assert all(t["unit"] == "kit_winter" and t["test_only"] for t in out)
+    assert kit[0]["unit"] == "kit_leon"                          # the input drives are not changed
+    winter, summer = out[:5], out[5:]
+    assert all(pd.Timestamp(t["order"], unit="s").strftime("%Y-%m") in ("2018-02", "2018-03") for t in winter)
+    assert len(summer) == 3                                      # 500 winter rows -> at most 300 summer rows: the 3 latest
+    assert [t["order"] - 365 * 86400 for t in summer] == [day("2017-07-03"), day("2017-08-01"), day("2017-08-02")]
+    assert min(t["order"] for t in summer) > max(t["order"] for t in winter)
+    assert not any(pd.Timestamp(t["order"], unit="s").month == 4 for t in out)
 
 
 def test_pipeline_runs_end_to_end():
