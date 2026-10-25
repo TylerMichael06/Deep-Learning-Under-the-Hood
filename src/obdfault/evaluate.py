@@ -36,11 +36,12 @@ Writes obd_results_faults.csv, obd_results_summary.csv, obd_results_binary.csv t
 """
 import argparse, os, time
 import numpy as np, pandas as pd
-from .config import CH, DT, W, FAULTY_CARS, FINAL_SCORING, KAGGLE_DATA, RESULTS, add_ltft
-from .data import load_kaggle, load_ved
+from .config import CH, DT, W, DATA, FAULTY_CARS, FINAL_SCORING, KAGGLE_DATA, RESULTS, add_ltft
+from .data import load_kaggle, load_ved, load_kit, kit_winter_first
 from .features import PHYSICS, windows
 from .model import resolve_device, channel_errors, channel_preds, ridge_errors
-from .scoring import calibrate, slow_stuck_scorer, auroc, drive_gaps, gap_z, cusum, GAP_Z
+from .scoring import (calibrate, slow_stuck_scorer, auroc, confirm, confirm_bias, drive_gaps, gap_z, cusum, GAP_Z, MIN_GAP_DRIVES,
+                      with_gap, intake_ref, SEASON_ALPHA)
 from .faults import ALL_FAULTS, FAULTS_SEQ, inject
 from .train import prepare_car, save_final
 
@@ -49,27 +50,36 @@ def evaluate_car(unit, trips, a):
     if P is None: return None, None, None
     base, tuned, mu, sd, Dtr, Dcal, Dclean, test_trips = (P[k] for k in ("base", "tuned", "mu", "sd", "Dtr", "Dcal", "Dclean", "test_trips"))
     has = Dclean["m"].numpy().mean(0) > 0.5
-    methods = {"pretrained only": lambda Ds: [channel_errors(base, d) for d in Ds],
-               "fine-tuned (ours)": lambda Ds: [channel_errors(tuned, d) for d in Ds],
-               "ridge baseline": lambda Ds: ridge_errors(Dtr, Ds)}
+    methods = {"pretrained only": lambda Ds: [channel_errors(base, d, signed=True) for d in Ds],
+               "fine-tuned (ours)": lambda Ds: [channel_errors(tuned, d, signed=True) for d in Ds],
+               "ridge baseline": lambda Ds: ridge_errors(Dtr, Ds, signed=True)}
     fault_trips = {f: inject(test_trips, f) for f in ALL_FAULTS if has[CH.index(ALL_FAULTS[f][0])]}
     fault_sets = {f: windows(t, mu, sd, stride=2) for f, t in fault_trips.items()}
     # warm-up grace: minutes before `a.grace` never raise an alarm and are not used to set the cutoff (cold starts)
     minute = lambda D_: (D_["start"] + W) * DT / 60
     warm_cal, warm_clean = minute(Dcal) >= a.grace, minute(Dclean) >= a.grace
     rows, summ, hits = [], [], {}
+    G = maf_gap_scores(P, fault_sets, has, a)                 # MAF drive gap z-scores (fine-tuned model), or None
+    gap_fault = lambda z: None if G is None else z > GAP_Z
     for name, errs in methods.items():
-        Es = errs([Dcal, Dclean] + list(fault_sets.values()))
+        Es, Bs = zip(*errs([Dcal, Dclean] + list(fault_sets.values())))     # squared and signed errors
         clean_ok = ~Dclean["code"]
-        # "stuck check" is the final scoring; the other two are compared in the results (two-speed = EXPERIMENT, not kept)
-        for scoring in ("shared cutoff", "stuck check", "two-speed + stuck check"):
+        # "stuck check" is the final scoring; the others are compared in the results
+        # (two-speed = EXPERIMENT, not kept; "+ bias" = EXPERIMENT for issue #33)
+        for scoring in ("shared cutoff", "stuck check", "two-speed + stuck check", "stuck check + bias"):
             if scoring == "shared cutoff":
-                sc, s_cal = calibrate(Es[0], Dcal["trip"], a.smooth); score = lambda E, D_, trips_: sc(E, D_["trip"])
+                sc, s_cal = calibrate(Es[0], Dcal["trip"], a.smooth); score = lambda E, D_, trips_, B=None: sc(E, D_["trip"])
             else:
-                score, s_cal = slow_stuck_scorer(Es[0], Dcal, P["cal_trips"], a, use_slow=scoring != "stuck check")
-            s_clean, _ = score(Es[1], Dclean, test_trips)
+                score, s_cal = slow_stuck_scorer(Es[0], Dcal, P["cal_trips"], a, use_slow=scoring == "two-speed + stuck check",
+                                                 B_cal=Bs[0] if scoring == "stuck check + bias" else None)
+            s_clean, _ = score(Es[1], Dclean, test_trips, Bs[1])
+            # regular part = the score without the bias part (same as the score for scorings without one), for confirm_bias
+            regular = (lambda E, D_, trips_: score(E, D_, trips_)[0]) if scoring == "stuck check + bias" else None
+            r_clean = regular(Es[1], Dclean, test_trips) if regular else s_clean
             real = auroc(Dclean["code"].astype(int), s_clean) if Dclean["code"].any() else np.nan
-            scored = [(f, Df, *score(E, Df, fault_trips[f]), minute(Df) >= a.grace) for (f, Df), E in zip(fault_sets.items(), Es[2:])]
+            scored = [(f, Df, *score(E, Df, fault_trips[f], B), minute(Df) >= a.grace)
+                      for (f, Df), E, B in zip(fault_sets.items(), Es[2:], Bs[2:])]
+            r_faults = [regular(E, Df, fault_trips[f]) if regular else s_f for (f, Df, s_f, _, _), E in zip(scored, Es[2:])]
             # Only judged data is scored: minutes after the warm-up, and drives with at least a.min_judge windows
             # (1 minute) after the warm-up. Shorter drives are "too short to judge" and counted separately.
             warm_c, trip_c = warm_clean[clean_ok], Dclean["trip"][clean_ok]
@@ -84,13 +94,26 @@ def evaluate_car(unit, trips, a):
                                  clean_drives_judged=int(judged_c.sum()), clean_drives_too_short=int((~judged_c).sum()),
                                  real_code_windows=int(Dclean["code"].sum()), real_code_AUROC=real))
                 clean_trip_hit = pd.Series(fc).groupby(trip_c).mean()[judged_c]
-                for f, Df, s_f, who, warm_f in scored:
+                clean_trip_reg = pd.Series((r_clean[clean_ok] > thr) & warm_c).groupby(trip_c).mean()[judged_c]
+                for (f, Df, s_f, who, warm_f), r_f in zip(scored, r_faults):
                     ch = CH.index(ALL_FAULTS[f][0]); ff = (s_f > thr) & warm_f          # FAULT calls on faulty minutes
                     y = np.r_[np.zeros(clean_ok.sum()), np.ones(len(s_f))]
                     judged_f = pd.Series(warm_f).groupby(Df["trip"]).sum() >= a.min_judge
                     trip_hit = pd.Series(ff).groupby(Df["trip"]).mean()[judged_f]   # share of each drive's minutes flagged
+                    trip_reg = pd.Series((r_f > thr) & warm_f).groupby(Df["trip"]).mean()[judged_f]
                     if name == "fine-tuned (ours)" and scoring == FINAL_SCORING and q == a.cutoffs[0]: hits[f] = (clean_trip_hit, trip_hit)
                     for rule in a.drive_rules:        # a whole drive is FAULT if more than `rule` of its minutes are flagged
+                        # EXPERIMENT (issue #33), drives in driving order: bias-only alarms confirmed on 2 of the last 3 drives
+                        # (confirm_bias), and, reported only, every alarm confirmed that way (confirm)
+                        scoped_f, scoped_c = confirm_bias(trip_reg > rule, trip_hit > rule), confirm_bias(clean_trip_reg > rule, clean_trip_hit > rule)
+                        conf_f, conf_c = confirm(trip_hit > rule), confirm(clean_trip_hit > rule)
+                        # drive verdict OR the MAF drive gap (fine-tuned model only; cars without the gap check keep the verdict)
+                        gap_cols = {}
+                        if name == "fine-tuned (ours)":
+                            gv_f = with_gap(trip_hit > rule, gap_fault(G["faults"][f]) if G else None)
+                            gv_c = with_gap(clean_trip_hit > rule, gap_fault(G["clean"]) if G else None)
+                            gap_cols = dict(gap_detection=gv_f.mean(), gap_TP=int(gv_f.sum()), gap_FN=int((~gv_f).sum()),
+                                            gap_FP=int(gv_c.sum()), gap_TN=int((~gv_c).sum()))
                         rows.append(dict(car=unit, method=name, scoring=scoring, cutoff=q, grace_min=a.grace, drive_rule=rule,
                                          fault=f, sensor=ALL_FAULTS[f][0], AUROC=auroc(y, np.r_[s_clean[clean_ok], s_f]),
                                          window_detection=ff[warm_f].mean(), drive_detection=(trip_hit > rule).mean(),
@@ -100,20 +123,35 @@ def evaluate_car(unit, trips, a):
                                          TP=int(ff.sum()), FN=int((~ff & warm_f).sum()), FP=int(fc.sum()), TN=int((~fc & warm_c).sum()),
                                          drive_TP=int((trip_hit > rule).sum()), drive_FN=int((trip_hit <= rule).sum()),
                                          drive_FP=int((clean_trip_hit > rule).sum()), drive_TN=int((clean_trip_hit <= rule).sum()),
-                                         drives_too_short=int((~judged_f).sum())))
-    return pd.DataFrame(rows), pd.DataFrame(summ), drive_gap_report(unit, P, fault_sets, fault_trips, hits, has, a)
+                                         drives_too_short=int((~judged_f).sum()), scoped_detection=scoped_f.mean(),
+                                         scoped_TP=int(scoped_f.sum()), scoped_FN=int((~scoped_f).sum()),
+                                         scoped_FP=int(scoped_c.sum()), scoped_TN=int((~scoped_c).sum()), confirmed_detection=conf_f.mean(),
+                                         confirmed_TP=int(conf_f.sum()), confirmed_FN=int((~conf_f).sum()),
+                                         confirmed_FP=int(conf_c.sum()), confirmed_TN=int((~conf_c).sum()), **gap_cols))
+    return pd.DataFrame(rows), pd.DataFrame(summ), drive_gap_report(unit, P, G, fault_trips, hits, a)
 
-def drive_gap_report(unit, P, fault_sets, fault_trips, hits, has, a):
+def maf_gap_scores(P, fault_sets, has, a):
+    """MAF drive gap z-scores (drive_gaps, gap_z; fine-tuned model) for the clean test drives and every fault set, by drive.
+    None if the car has no MAF or fewer than MIN_GAP_DRIVES calibration drives with a gap."""
+    j = CH.index("MAF"); tuned, mu, sd = P["tuned"], P["mu"], P["sd"]
+    if not has[j]: return None
+    use = lambda D_: (D_["start"] + W) * DT / 60 >= a.grace
+    t_ref = intake_ref(P["Dcal"], mu, sd, use(P["Dcal"]))       # season correction relative to the calibration drives
+    gap = lambda D_: drive_gaps(channel_preds(tuned, D_, j), D_, j, mu, sd, use(D_), a.min_judge, t_ref=t_ref, alpha=a.season_alpha)
+    g_cal = gap(P["Dcal"])
+    if len(g_cal) < MIN_GAP_DRIVES: return None
+    z = gap_z(g_cal)
+    return dict(cal=g_cal, clean=z(gap(P["Dclean"])), faults={f: z(gap(Df)) for f, Df in fault_sets.items()})
+
+def drive_gap_report(unit, P, G, fault_trips, hits, a):
     """MAF faults, per drive: the current score (share of minutes flagged) vs the signed MAF gap (gap_z), and for the
-    drive-to-drive buildup fault, when the trend check (CUSUM) first alarms. Fine-tuned model only."""
-    j = CH.index("MAF"); tuned, mu, sd, rule = P["tuned"], P["mu"], P["sd"], a.drive_rules[0]
-    gap = lambda D_: drive_gaps(channel_preds(tuned, D_, j), D_, j, mu, sd, (D_["start"] + W) * DT / 60 >= a.grace, a.min_judge)
-    g_cal = gap(P["Dcal"]) if has[j] else []
-    if len(g_cal) < 2: return pd.DataFrame()                    # no MAF, or too few calibration drives to learn its spread
-    z = gap_z(g_cal); z_clean, out = z(gap(P["Dclean"])), []
-    for f, Df in fault_sets.items():
+    drive-to-drive buildup fault, when the trend check (CUSUM) first alarms. Fine-tuned model only. G: maf_gap_scores."""
+    if G is None: return pd.DataFrame()                         # no MAF, or too few calibration drives to learn its spread
+    j, rule = CH.index("MAF"), a.drive_rules[0]
+    g_cal, z_clean, out = G["cal"], G["clean"], []
+    for f, z_f in G["faults"].items():
         if ALL_FAULTS[f][0] != "MAF": continue
-        z_f, (hit_c, hit_f) = z(gap(Df)), hits[f]
+        hit_c, hit_f = hits[f]
         two = lambda c, f_: np.r_[np.zeros(len(c)), np.ones(len(f_))]
         either = lambda h, z_: pd.concat([h > rule, z_ > GAP_Z], axis=1).fillna(False).any(axis=1)   # FAULT if either score fires
         row = dict(car=unit, fault=f, cal_drives=len(g_cal), clean_drives=len(z_clean), faulty_drives=len(z_f),
@@ -157,6 +195,12 @@ def binary_report(R):
     for k, g in R.groupby(keys + ["drive_rule"]):
         out.append(dict(zip(keys, k[:3]), level=f"drive (>{k[3]:.0%} of minutes)",
                         **metrics(*g[["drive_TP", "drive_FN", "drive_FP", "drive_TN"]].sum().to_numpy())))
+        for col, lab in (("scoped", "bias alarms confirmed"), ("confirmed", "all alarms confirmed (reported only)")):   # EXPERIMENT, #33
+            out.append(dict(zip(keys, k[:3]), level=f"drive (>{k[3]:.0%}), {lab} on 2 of last 3 drives",
+                            **metrics(*g[[f"{col}_TP", f"{col}_FN", f"{col}_FP", f"{col}_TN"]].sum().to_numpy())))
+        if "gap_TP" in g and g.gap_TP.notna().all():                 # EXPERIMENT, #33: fine-tuned method only
+            out.append(dict(zip(keys, k[:3]), level=f"drive (>{k[3]:.0%}) or MAF drive gap",
+                            **metrics(*g[["gap_TP", "gap_FN", "gap_FP", "gap_TN"]].sum().astype(int).to_numpy())))
     return pd.DataFrame(out).sort_values(keys + ["level"]).reset_index(drop=True)
 
 # =================================== MAIN ======================================
@@ -176,6 +220,8 @@ def main():
     ap.add_argument("--grace", type=float, default=5, help="warm-up grace period (minutes): no alarms at the start of a drive")
     ap.add_argument("--smooth-long", type=int, default=60, help="slow score: average over this many windows (60 x 10 s = 10 min)")
     ap.add_argument("--min-flat", type=float, default=5, help="stuck check: never flag a freeze shorter than this (minutes)")
+    ap.add_argument("--cusum-k", type=float, default=0.5,
+                    help="EXPERIMENT (issue #33), 'stuck check + bias' scoring: allowance per window in the bias running total")
     # ---- EXPERIMENT options (all off by default; the final model uses none of them) ----
     ap.add_argument("--physics", action="store_true",
                     help="add the physics inputs (tested: slightly better on air faults, more false alarms; not used in the final model)")
@@ -186,6 +232,13 @@ def main():
     ap.add_argument("--ved-pretrain", type=int, default=60, help="VED gasoline cars added to pretraining")
     ap.add_argument("--ved-test", type=int, default=4, help="VED cars held out as extra test cars (never pretrained on)")
     ap.add_argument("--ltft", action="store_true", help="experiment: add long-term fuel trim (bank 1) as a 10th sensor")
+    ap.add_argument("--kit", action="store_true",
+                    help="experiment (issue #33): add the KIT car (data/public/kit-obd2, 81 drives) as an extra held-out test car")
+    ap.add_argument("--kit-winter", action="store_true",
+                    help="experiment (issue #33): add the KIT car fine-tuned and calibrated on its winter drives and tested on its "
+                         "summer drives (season test)")
+    ap.add_argument("--season-alpha", type=float, default=SEASON_ALPHA,
+                    help="experiment (issue #33): share of the air-density (season) correction applied to the MAF drive gap (0 = off)")
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--device", choices=["cpu", "mps", "cuda", "auto"], default="cpu",
                     help="Transformer backend (default: cpu; auto prefers CUDA, then MPS, then CPU)")
@@ -203,6 +256,11 @@ def main():
     if a.ved:
         ved = load_ved(a.ved, a.ved_pretrain, a.ved_test); trips += ved
         if not a.cars: cars += sorted({t["unit"] for t in ved if t["test_only"]})
+    if a.kit or a.kit_winter:
+        kit = load_kit(os.path.join(DATA, "public", "kit-obd2", "OBD-II-Dataset.zip"))
+        extra = (kit if a.kit else []) + (kit_winter_first(kit) if a.kit_winter else [])
+        trips += extra
+        if not a.cars: cars += sorted({t["unit"] for t in extra})
     if a.quick and not a.cars: cars = cars[:1] + [c for c in cars if c.startswith("ved")][:1]
     if a.final_only: return save_final(trips, a, t0)
     all_rows, all_summ, all_gap = [], [], []

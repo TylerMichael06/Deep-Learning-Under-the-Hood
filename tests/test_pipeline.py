@@ -2,9 +2,9 @@
 import numpy as np, torch
 from synthdata import EVAL_ARGS, SYN_ARGS, make_trips, write_kaggle_csvs
 from obdfault.config import CH
-from obdfault.data import load_kaggle
+from obdfault.data import load_kaggle, load_kit, kit_winter_first
 from obdfault.features import PHYSICS
-from obdfault.evaluate import evaluate_car
+from obdfault.evaluate import evaluate_car, binary_report
 from obdfault.synthetic import FINAL_VARIANT, decide, test_car as run_synthetic_car   # renamed so pytest doesn't collect it
 
 
@@ -18,13 +18,67 @@ def test_load_kaggle_reads_the_raw_format(tmp_path):
     assert trips[2]["code"].any() and not trips[0]["code"].any()
 
 
+def test_load_kit_reads_the_zip(tmp_path):
+    import zipfile
+    head = ("Time,Engine Coolant Temperature [\u00b0C],Intake Manifold Absolute Pressure [kPa],Engine RPM [RPM],"
+            "Vehicle Speed Sensor [km/h],Intake Air Temperature [\u00b0C],Air Flow Rate from Mass Flow Sensor [g/s],"
+            "Absolute Throttle Position [%],Ambient Air Temperature [\u00b0C],Accelerator Pedal Position D [%],"
+            "Accelerator Pedal Position E [%]")
+    def drive(start_s, n=600):                                 # one signal per row, like the app logs them
+        rows = []
+        for i in range(n):
+            t = (start_s + i) % 86400; v = [""] * 10; v[i % 7] = str(50 + i % 30)
+            rows.append(f"{int(t // 3600):02d}:{int(t % 3600 // 60):02d}:{t % 60:06.3f}," + ",".join(v))
+        return "\n".join([head] + rows)
+    path = tmp_path / "kit.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("OBD-II-Dataset/2017-07-05_Seat_Leon_KA_KA_Normal.csv", drive(86400 - 300).encode("latin-1"))  # past midnight
+        z.writestr("OBD-II-Dataset/2017-07-05_Seat_Leon_A_B_Frei.csv", drive(8 * 3600).encode("latin-1"))
+    trips = load_kit(str(path))
+    assert len(trips) == 2 and all(t["unit"] == "kit_leon" and t["test_only"] for t in trips)
+    assert all(len(t["X"]) == 120 for t in trips)              # 600 s on a 5 s grid: midnight did not cut the drive
+    have = ~np.isnan(trips[0]["X"]).all(0)
+    assert [c for c, h in zip(CH, have) if h] == ["RPM", "SPEED", "THROTTLE", "ECT", "IAT", "MAP", "MAF"]
+    assert trips[1]["order"] - trips[0]["order"] == 86400 - 300 - 8 * 3600   # order = date + start time of day
+
+
+def test_kit_winter_first_calibrates_in_winter_and_tests_in_summer():
+    import pandas as pd
+    day = lambda s: pd.Timestamp(s).timestamp()
+    drive = lambda date, n=100: dict(unit="kit_leon", order=day(date), test_only=True, X=np.zeros((n, len(CH))))
+    kit = ([drive(f"2017-07-0{d}") for d in (1, 2, 3)] + [drive(f"2017-08-0{d}") for d in (1, 2)]
+           + [drive(f"2018-02-0{d}") for d in (1, 2, 3)] + [drive(f"2018-03-0{d}") for d in (1, 2)] + [drive("2018-04-01")])
+    out = kit_winter_first(kit)
+    assert all(t["unit"] == "kit_winter" and t["test_only"] for t in out)
+    assert kit[0]["unit"] == "kit_leon"                          # the input drives are not changed
+    winter, summer = out[:5], out[5:]
+    assert all(pd.Timestamp(t["order"], unit="s").strftime("%Y-%m") in ("2018-02", "2018-03") for t in winter)
+    assert len(summer) == 3                                      # 500 winter rows -> at most 300 summer rows: the 3 latest
+    assert [t["order"] - 365 * 86400 for t in summer] == [day("2017-07-03"), day("2017-08-01"), day("2017-08-02")]
+    assert min(t["order"] for t in summer) > max(t["order"] for t in winter)
+    assert not any(pd.Timestamp(t["order"], unit="s").month == 4 for t in out)
+
+
 def test_pipeline_runs_end_to_end():
     PHYSICS.clear(); torch.manual_seed(0)
     trips = make_trips()
     R, summary, _ = evaluate_car("car2", trips, EVAL_ARGS)
     assert set(R.method) == {"pretrained only", "fine-tuned (ours)", "ridge baseline"}
+    assert set(R.scoring) == {"shared cutoff", "stuck check", "two-speed + stuck check", "stuck check + bias"}
     assert R.AUROC.notna().any() and R.AUROC.dropna().between(0, 1).all()
     assert summary.false_alarm_rate.between(0, 1).all()
+    plain = R[R.scoring != "stuck check + bias"]               # no bias part: confirming bias alarms changes nothing
+    assert (plain.scoped_TP == plain.drive_TP).all() and (plain.scoped_FP == plain.drive_FP).all()
+    assert (R.confirmed_TP <= R.drive_TP).all() and (R.confirmed_FP <= R.drive_FP).all()
+    B = binary_report(R); levels = set(B.level)
+    gap_methods = set(B[B.level == "drive (>30%) or MAF drive gap"].method)
+    assert gap_methods == {"fine-tuned (ours)"}                       # the MAF drive gap uses the fine-tuned model only
+    assert {"drive (>30%), bias alarms confirmed on 2 of last 3 drives",
+            "drive (>30%), all alarms confirmed (reported only) on 2 of last 3 drives"} <= levels
     rows, key = run_synthetic_car("car2", trips, SYN_ARGS, np.random.RandomState(42))
     _, key = decide(rows, key, 5, 0.3, FINAL_VARIANT)
     assert set(key.model_says) <= {"HEALTHY", "FAULT", "TOO SHORT"}
+    _, key_gap = decide(rows, key, 5, 0.3, "only+gap")             # stuck check OR the MAF drive gap
+    assert ((key.model_says == "FAULT") <= (key_gap.model_says == "FAULT")).all()
+    _, key_bias = decide(rows, key, 5, 0.3, "bias")
+    assert set(key_bias.model_says) <= {"HEALTHY", "FAULT", "TOO SHORT"}
