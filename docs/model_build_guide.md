@@ -286,7 +286,7 @@ MAF 15% low (sensor only) 1/5 · MAP +8 kPa (sensor only) 0/2 · clean drives 12
 
 ## Step 10: The fixes we tested, and how much better the model got 
 
-After the first version, eight fixes were tested. **Both tests were re-run on exactly the same cars, drives and faults**
+After the first version, nine fixes were tested. **Both tests were re-run on exactly the same cars, drives and faults**
 for every combination, so the numbers compare fairly.
 
 1. **Two-speed alarm:** a second, slow score averaged over 10 minutes, to catch creeping faults.
@@ -311,6 +311,12 @@ for every combination, so the numbers compare fairly.
    drive is FAULT if the minute rule says so **or** the gap is more than 3 normal spreads low. Needs at least 3
    calibration drives with a gap (cars with fewer keep the minute verdict). Level "drive (>30%) or MAF drive gap"
    (main test) and variant "stuck check + MAF drive gap" (synthetic test).
+9. **Season correction for the MAF drive gap (issue #33):** cold air is denser, so a healthy MAF reads higher in winter
+   than a model that never saw cold air expects (ideal gas: about 0.35% per °C; the Kaggle cars only see 27-58 °C intake
+   air). Each reading in the drive gap is multiplied by (intake temperature ÷ the calibration drives' median intake
+   temperature, in Kelvin) to the power alpha. Off by default (alpha = 0). `--season-alpha 0.5` turns it on (half the
+   ideal-gas correction, chosen on the KIT car, the only car with cold data). `--kit-winter` adds a test car (the KIT
+   car fine-tuned and calibrated on its winter drives, tested on its summer drives).
 
 | Configuration | Main AUROC | Main F1 (drive) | Main false alarms | Synthetic F1 (drive) | Synthetic false alarms |
 |---|---|---|---|---|---|
@@ -328,6 +334,8 @@ for every combination, so the numbers compare fairly.
 | + confirmed bias score (issue #33, 3rd run) | 0.84 | 0.78 | 14% | 0.83 | 27% |
 | stuck check (issue #33, 4th run) | 0.80 | 0.73 | 16% | 0.81 | 20% |
 | + MAF drive gap in the verdict (issue #33, 4th run) | 0.80* | 0.79 | 16% | 0.84 | 20% |
+| MAF drive gap, no season correction (issue #33, 5th run) | 0.80 | 0.79 | 16% | 0.84 | 20% |
+| + season correction (issue #33, 5th run) | 0.80 | 0.78 | 17% | 0.84 | 20% |
 
 - **Stuck check: kept.** Stuck coolant caught in 78% of drives instead of 44% (main test) and 3/3 instead of 1/3
   (synthetic), with only a small rise in false alarms. Best overall on both tests.
@@ -383,6 +391,22 @@ for every combination, so the numbers compare fairly.
   winter. Not yet the final setting: switching the final verdict to "stuck check OR MAF drive gap" is a team decision.
   \* The gap check works per drive, so the per-minute AUROC is the stuck check's.
   The "4th run" rows come from one run together, so compare them with each other.
+- **Season correction for the MAF drive gap (issue #33): not adopted.** It is off by default (`SEASON_ALPHA = 0`);
+  `--season-alpha 0.5` reproduces the test. Without → with the correction: Kaggle cars, clean drives flagged 11 → 12 of
+  74, MAF -25% caught 94% → 88%, MAF drift 70% → 70%, MAF dirt buildup 60% → 62%, F1 0.79 → 0.78. All of the loss is on
+  car12 (4 calibration drives, intake air 31-55 °C): one extra clean drive flagged, MAF -25% caught 75% → 50%. Likely
+  reason: on the Kaggle cars the intake air temperature is heat-soaked engine-bay air (27-58 °C), not outside air, so
+  correcting by it adds noise, and car12 has only 4 calibration drives. Synthetic test: unchanged (F1 0.84, 3 of 15
+  clean drives flagged). KIT car (normal order): clean drives flagged 3 → 3 of 31, F1 0.77 → 0.81; Tyler's trend check
+  alarm on the dirt-buildup fault came at drive 10 → 6 of 31 (sensor 10% → 6% low). Winter-calibrated KIT car: 8 of 23
+  clean drives flagged either way, but none of them by the gap check (0 of 23 with and without the correction): all 8
+  come from the minute score, which the correction does not touch. In the earlier throwaway test, two other trainings
+  of this car had the gap check flag 5 and 2 of 23 clean drives without the correction and 0 with it, so whether the
+  season false alarm appears depends on the training run. Trend check: no false alarms either way; its alarm on the
+  dirt buildup came at drive 6 → 11 of 23. New finding: after a winter calibration, the minute score itself
+  false-alarms on 8 of 23 summer drives (35%), so the season affects the regular score too, not just the MAF gap.
+  Caveat: alpha = 0.5 was chosen on one car.
+  The "5th run" rows come from one run together, so compare them with each other.
 - **Realistic air faults: kept in the test.** They are caught far more often (45-60% of drives) than the sensor-only
   versions (5-40%), so in a real car these faults would mostly be visible through the fuel trim.
 
@@ -433,6 +457,7 @@ for every combination, so the numbers compare fairly.
 - Only 15 healthy cars of training data (several with very little driving), logged every ~4-12 s over Bluetooth
 - Assumes the fine-tune/calibration drives are healthy
 - The MAF drive check assumes a healthy car's drive-to-drive gap varies by at least 2%, and needs a few calibration drives
+- The MAF season correction (half the ideal-gas air-density effect) was chosen on one car, the only one with cold-weather drives
 
 
 ## Step 13: Using it on your own car (final step, not built yet)
