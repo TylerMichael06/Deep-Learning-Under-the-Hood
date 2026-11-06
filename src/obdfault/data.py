@@ -1,5 +1,5 @@
-"""Step 1: read the Kaggle OBD-II files (and the VED experiment) into drives on a 5-second grid."""
-import glob, os
+"""Step 1: read the Kaggle OBD-II files (and the VED and KIT experiments) into drives on a 5-second grid."""
+import glob, os, zipfile
 import numpy as np, pandas as pd
 from .config import CH, SRC, RANGE, DT, W
 
@@ -80,6 +80,46 @@ def load_ved(folder, n_pre, n_test, rows_pre=2000, rows_test=6000, seed=0):
             if total >= cap: break
     print(f"VED: {len(pre_ids)} pretraining cars, {len(test_ids)} held-out test cars, {len(trips)} drives")
     return trips
+
+# ---- EXPERIMENT (issue #33, only runs with --kit) ------------------------------------------------------------
+# KIT Automotive OBD-II Dataset (data/public/kit-obd2/, see data/README.md): one car, 81 drives over 9 months, the only
+# car with enough drives to test rules that look across drives. 7 of our 9 sensors (no load, no fuel trim).
+# Column names start with these:
+KIT_COLS = {"ECT": "Engine Coolant Temperature", "MAP": "Intake Manifold Absolute Pressure", "RPM": "Engine RPM",
+            "SPEED": "Vehicle Speed Sensor", "IAT": "Intake Air Temperature", "MAF": "Air Flow Rate from Mass Flow Sensor",
+            "THROTTLE": "Absolute Throttle Position"}
+
+def load_kit(path, unit="kit_leon"):
+    """KIT zip -> trips like load_kaggle, one per CSV (one drive); order = start time (date in the file name + time of day).
+    Rows hold one signal each (the app polls them in turn) and Time is the time of day, so drives that pass midnight are
+    unwrapped. Marked test_only (never pretrained on)."""
+    trips = []
+    with zipfile.ZipFile(path) as z:
+        for name in sorted(n for n in z.namelist() if n.endswith(".csv")):
+            df = pd.read_csv(z.open(name), encoding="latin-1")
+            t = pd.to_timedelta(df.Time, errors="coerce").dt.total_seconds().to_numpy()
+            t = t + 86400 * np.cumsum(np.r_[0, np.diff(t) < -43200])           # past midnight
+            d = pd.DataFrame({"t": t - np.nanmin(t), "code": 0.0, "row": np.arange(len(df))}); d["runtime"] = d.t
+            for c in CH:
+                col = next((k for k in df.columns if k.startswith(KIT_COLS[c])), None) if c in KIT_COLS else None
+                v = pd.to_numeric(df[col], errors="coerce").to_numpy(float) if col else np.full(len(df), np.nan)
+                lo, hi = RANGE[c]; d[c] = np.where((v >= lo) & (v <= hi), v, np.nan)
+            tr, date = resample(d.sort_values("t")), os.path.basename(name)[:10]
+            if tr is None: continue
+            trips.append(dict(unit=unit, order=pd.Timestamp(date).timestamp() + np.nanmin(t), test_only=True, **tr))
+    return trips
+
+def kit_winter_first(kit, unit="kit_winter"):
+    """EXPERIMENT (issue #33, --kit-winter): the KIT car as if its first drives were in winter, to test the season
+    correction. Feb-Mar 2018 drives come first (fine-tune + calibration); April is dropped; the latest Jul-Aug 2017 drives
+    are kept while their driving time is at most 0.6 x the winter driving time, and moved one year later (test drives).
+    Returns new drives with `unit` renamed; the input is not changed."""
+    month = lambda t: pd.Timestamp(t["order"], unit="s").strftime("%Y-%m")
+    winter = [dict(t, unit=unit) for t in kit if month(t) in ("2018-02", "2018-03")]
+    summer = sorted((t for t in kit if month(t).startswith("2017")), key=lambda t: t["order"])
+    n_winter = sum(len(t["X"]) for t in winter)
+    while summer and sum(len(t["X"]) for t in summer) > 0.6 * n_winter: summer.pop(0)   # keep the latest summer drives
+    return winter + [dict(t, unit=unit, order=t["order"] + 365 * 86400) for t in summer]
 
 def resample(g):
     """Put one trip on a 5 s grid. A value is kept only if a real reading is within 12 s of the grid point."""

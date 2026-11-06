@@ -20,8 +20,9 @@ from sklearn.metrics import roc_auc_score
 from .config import CH, DT, W, KAGGLE_DATA, RESULTS
 from .data import load_kaggle
 from .features import PHYSICS, windows
-from .model import resolve_device, channel_errors
-from .scoring import calibrate, unit_scale, flat_minutes, FLAT_SENSORS
+from .model import resolve_device, channel_errors, channel_preds
+from .scoring import (calibrate, unit_scale, flat_minutes, FLAT_SENSORS, bias_scorer, drive_gaps, gap_z, GAP_Z, MIN_GAP_DRIVES,
+                      intake_ref, SEASON_ALPHA)
 from .faults import maf_reacts, map_reacts
 from .train import prepare_car
 
@@ -77,7 +78,7 @@ def test_car(unit, trips, a, rng):
     # --- score with the final settings. With a warm-up grace period of g minutes, the first g minutes of every drive
     #     never raise an alarm, and they are also left out when the alarm level is set from calibration drives.
     D = windows(test, P["mu"], P["sd"], stride=2); Dc = P["Dcal"]
-    E_cal, E = channel_errors(P["tuned"], Dc), channel_errors(P["tuned"], D)
+    (E_cal, B_cal), (E, B) = (channel_errors(P["tuned"], d, signed=True) for d in (Dc, D))
     cal_min = (Dc["start"] + W) / STEPS_PER_MIN
     # current: score averaged over the last 2 minutes
     score, s_cal = calibrate(E_cal, Dc["trip"], a.smooth)
@@ -100,29 +101,49 @@ def test_car(unit, trips, a, rng):
     # stuck check on its own (no slow score): the usual 2-minute score or the stuck check, whichever is larger
     only, only_cal = np.maximum(n_s, n_f), np.maximum(n_s_cal, n_f_cal)
     who_only = np.where(n_f > n_s, flat_who, who)
+    # EXPERIMENT (issue #33): the stuck-check score or the signed-error (bias) score, whichever is larger
+    bias, b_cal = bias_scorer(B_cal, Dc, a.cusum_k, max(a.graces))
+    if bias is None: withb, withb_cal, who_withb = only, only_cal, who_only     # too few calibration drives: no bias score
+    else:
+        b, who_b = bias(B, D); n_b, n_b_cal = unit_scale(b_cal[warm], b), unit_scale(b_cal[warm], b_cal)
+        withb, withb_cal = np.maximum(only, n_b), np.maximum(only_cal, n_b_cal)
+        who_withb = np.where(n_b > only, who_b, who_only)
     truth = np.array([test[t]["truth"][st:st + W].mean() >= 0.5 for t, st in zip(D["trip"], D["start"])])
     name = lambda w: [CH[i] if i >= 0 else "" for i in w]
     rows = pd.DataFrame(dict(car=unit, drive=D["trip"], minute=(D["start"] + W) / STEPS_PER_MIN, truth=truth,
                              score=s, blamed=name(who), score_two=two, blamed_two=name(who_two),
-                             score_stuck=stuck, blamed_stuck=name(who_stuck), score_only=only, blamed_only=name(who_only)))
+                             score_stuck=stuck, blamed_stuck=name(who_stuck), score_only=only, blamed_only=name(who_only),
+                             score_bias=withb, blamed_bias=name(who_withb)))
     for g in a.graces:                                  # alarm lines, one per variant and warm-up length
         ok = cal_min >= g
         rows[f"thr_{g}"] = np.quantile(s_cal[ok], a.cutoff)
         rows[f"thr_two_{g}"] = np.quantile(two_cal[ok], a.cutoff)
         rows[f"thr_stuck_{g}"] = np.quantile(stuck_cal[ok], a.cutoff)
         rows[f"thr_only_{g}"] = np.quantile(only_cal[ok], a.cutoff)
+        rows[f"thr_bias_{g}"] = np.quantile(withb_cal[ok], a.cutoff)
     key = pd.DataFrame(key).assign(car=unit, truth=lambda k: np.where(k.fault == "clean", "HEALTHY", "FAULT"))
+    # EXPERIMENT (issue #33): the MAF drive gap per test drive (see obdfault.evaluate.maf_gap_scores); False without the check
+    j, g0 = CH.index("MAF"), max(a.graces)
+    use = lambda D_: (D_["start"] + W) / STEPS_PER_MIN >= g0
+    t_ref = intake_ref(Dc, P["mu"], P["sd"], use(Dc))             # season correction relative to the calibration drives
+    gap = lambda D_: drive_gaps(channel_preds(P["tuned"], D_, j), D_, j, P["mu"], P["sd"], use(D_), 6, t_ref=t_ref, alpha=a.season_alpha)
+    g_cal = gap(Dc)
+    z = gap_z(g_cal)(gap(D)) if len(g_cal) >= MIN_GAP_DRIVES else pd.Series(dtype=float)
+    key["gap_fault"] = [bool(z.get(k, np.nan) > GAP_Z) for k in key.drive]
     print(f"{unit}: {len(key)} test drives ({(key.fault != 'clean').sum()} with a fault)", flush=True)
     return rows, key
 
 VARIANTS = {"current (2-min score)": "", "two-speed (2 + 10 min)": "two", "two-speed + stuck check": "stuck",
-            "stuck check (no two-speed)": "only"}
+            "stuck check (no two-speed)": "only", "stuck check + bias": "bias",   # "+ bias" = EXPERIMENT, issue #33
+            "stuck check + MAF drive gap": "only+gap"}                            # EXPERIMENT, issue #33: drive verdict OR gap
 FINAL_VARIANT = "only"      # final model: 2-minute score + stuck-sensor check
 
 def decide(rows, key, g, rule, variant="", min_judge=6):
     """Apply the alarm with a g-minute warm-up grace period; fill in the model's verdict for every drive.
     Minutes in the warm-up are not judged; drives with fewer than min_judge windows (1 minute) after the warm-up
-    are "TOO SHORT" to judge. Both are reported separately, not counted as caught or missed."""
+    are "TOO SHORT" to judge. Both are reported separately, not counted as caught or missed.
+    A variant ending in "+gap" (EXPERIMENT, issue #33) also calls a judged drive FAULT if its MAF drive gap fires (key.gap_fault)."""
+    use_gap = variant.endswith("+gap"); variant = variant.removesuffix("+gap")
     sfx = f"_{variant}" if variant else ""
     rows = rows.assign(score=rows["score" + sfx], blamed=rows["blamed" + sfx], threshold=rows[f"thr{sfx}_{g}"])
     rows["judged"] = rows.minute >= g
@@ -130,7 +151,9 @@ def decide(rows, key, g, rule, variant="", min_judge=6):
     key = key.copy(); ids = list(zip(key.car, key.drive))
     share = rows.groupby(["car", "drive"]).flagged.mean(); n_judged = rows.groupby(["car", "drive"]).judged.sum()
     key["judged"] = [n_judged.get(i, 0) >= min_judge for i in ids]
-    key["model_says"] = ["TOO SHORT" if not j else "FAULT" if share.get(i, 0) > rule else "HEALTHY" for i, j in zip(ids, key.judged)]
+    gap = key.gap_fault.to_numpy() if use_gap else np.zeros(len(key), bool)
+    key["model_says"] = ["TOO SHORT" if not j else "FAULT" if share.get(i, 0) > rule or gf else "HEALTHY"
+                         for i, j, gf in zip(ids, key.judged, gap)]
     hit = rows[rows.flagged & rows.truth].groupby(["car", "drive"])
     blamed, first = hit.blamed.agg(lambda b: b.value_counts().index[0]), hit.minute.min()   # first correct alarm
     key["model_blames"] = [blamed.get(i, "") for i in ids]
@@ -185,6 +208,10 @@ def main():
                     help="warm-up grace periods (minutes) to compare; the first one is used for the saved files")
     ap.add_argument("--smooth-long", type=int, default=60, help="slow score: average over this many windows (60 x 10 s = 10 min)")
     ap.add_argument("--min-flat", type=float, default=5, help="stuck check: never flag a freeze shorter than this (minutes)")
+    ap.add_argument("--cusum-k", type=float, default=0.5,
+                    help="EXPERIMENT (issue #33), 'stuck check + bias' variant: allowance per window in the bias running total")
+    ap.add_argument("--season-alpha", type=float, default=SEASON_ALPHA,
+                    help="experiment (issue #33): share of the air-density (season) correction applied to the MAF drive gap (0 = off)")
     ap.add_argument("--physics", action="store_true", help="add the physics inputs (not used in the final model)")
     ap.add_argument("--tag", default="", help="added to output file names, e.g. _physics")
     ap.add_argument("--device", choices=["cpu", "mps", "cuda", "auto"], default="cpu",

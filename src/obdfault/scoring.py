@@ -45,16 +45,61 @@ def unit_scale(x_cal, x):
     med, top = np.median(x_cal), np.quantile(x_cal, .99)
     return (x - med) / max(top - med, 1e-6)
 
-def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True):   # final model: use_slow=False ("stuck check")
+# ---- EXPERIMENT (issue #33): bias score for slow air-sensor drift; off in the final model ------------------------------
+def running_cusum(z, k):
+    """Two-sided CUSUM through one drive. z: (N, C) standardized signed errors in time order (NaN = missing).
+    'up' adds up readings lower than predicted, 'down' higher; each total forgets k per window and never drops below 0,
+    so noise stays near 0 while a steady offset keeps growing. Returns (N, C) = max(up, down), NaN where z is missing."""
+    up, down, out = np.zeros(z.shape[1]), np.zeros(z.shape[1]), np.full(z.shape, np.nan)
+    for i, zi in enumerate(z):
+        ok = ~np.isnan(zi)
+        up[ok] = np.maximum(0, up[ok] + zi[ok] - k); down[ok] = np.maximum(0, down[ok] - zi[ok] - k)
+        out[i, ok] = np.maximum(up, down)[ok]
+    return out
+
+BIAS_SENSORS = ["MAP", "LOAD"]   # air-path sensors the bias score watches (MAF: drive gap); fuel trim shifts between healthy drives
+MIN_BIAS_DRIVES = 3                      # fewer calibration drives can't show how much healthy drives differ: bias score off
+
+def bias_scorer(B_cal, Dcal, k, grace):
+    """Signed-error (bias) score on the air-path sensors (BIAS_SENSORS). On this car's calibration windows after the warm-up,
+    learn each sensor's usual signed error (mean, std) -> z-score; then run a two-sided CUSUM per drive, starting after
+    `grace` minutes. Window score = worst air sensor's total (0 if none has a value).
+    Returns score(B, D), standardized with all calibration drives, and the calibration scores, where each calibration drive
+    is scored with the mean/std of the OTHER calibration drives (leave-one-out), so the alarm line reflects how the score
+    behaves on drives it was not fitted on. With fewer than MIN_BIAS_DRIVES calibration drives returns (None, None): no bias score."""
+    warm = lambda D: (D["start"] + W) * DT / 60 >= grace
+    air = np.isin(np.arange(len(CH)), [CH.index(c) for c in BIAS_SENSORS])
+    def fit(B, D):                                                     # air sensors seen enough to calibrate
+        Bw = np.where(air, B, np.nan)[warm(D)]; ok = (~np.isnan(Bw)).sum(0) >= 10; Bw = np.where(ok, Bw, 0)
+        return np.where(ok, np.nanmean(Bw, 0), np.nan), np.where(ok, np.nanstd(Bw, 0) + 1e-6, np.nan)
+    def scorer(m, s):
+        def score(B, D):
+            Z = np.where(warm(D)[:, None], (B - m) / s, np.nan); T = np.full(Z.shape, np.nan)
+            for t in np.unique(D["trip"]): i = D["trip"] == t; T[i] = running_cusum(Z[i], k)
+            T = np.where(np.isnan(T), -np.inf, T); sc, who = T.max(1), T.argmax(1)
+            return np.where(np.isfinite(sc), sc, 0.0), np.where(np.isfinite(sc), who, -1)
+        return score
+    trips = np.unique(Dcal["trip"])
+    if len(trips) < MIN_BIAS_DRIVES: return None, None
+    score = scorer(*fit(B_cal, Dcal))
+    s_cal = np.zeros(len(B_cal)); sub = lambda i: dict(trip=Dcal["trip"][i], start=Dcal["start"][i])
+    for t in trips:                                                    # leave this calibration drive out
+        i = Dcal["trip"] == t; s_cal[i] = scorer(*fit(B_cal[~i], sub(~i)))(B_cal[i], sub(i))[0]
+    return score, s_cal
+
+def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True, B_cal=None):   # final model: use_slow=False, B_cal=None ("stuck check")
     """Fixes for slow faults. Score = the largest of
        (1) the usual 2-minute score, (2) a slow 10-minute score (catches creeping drift), and
-       (3) a stuck check: minutes a slow sensor has been frozen ÷ the longest freeze seen on this car's calibration drives.
-    Each part is rescaled on calibration data so they share one alarm line. Returns score(E, D, trips) and calibration scores."""
+       (3) a stuck check: minutes a slow sensor has been frozen ÷ the longest freeze seen on this car's calibration drives,
+       (4) EXPERIMENT (issue #33), only if B_cal (calibration signed errors) is given: the bias score (bias_scorer).
+    Each part is rescaled on calibration data so they share one alarm line. With B_cal, the calibration scores mix in-sample
+    fast/slow/stuck parts with the leave-one-out bias part (only the bias score showed in-sample optimism). Returns score(E, D, trips, B) and calibration scores; score(E, D, trips) without B gives the parts other than the bias score."""
     fast, fast_cal = calibrate(E_cal, Dcal["trip"], a.smooth)
     slow, slow_cal = calibrate(E_cal, Dcal["trip"], a.smooth_long)
     warm = (Dcal["start"] + W) * DT / 60 >= a.grace
     longest = np.maximum(flat_minutes(cal_trips, Dcal).max(0), a.min_flat)
-    def score(E, D, trips):
+    bias, bias_cal = bias_scorer(B_cal, Dcal, a.cusum_k, a.grace) if B_cal is not None else (None, None)
+    def base(E, D, trips):
         (s, who), (l, who_l) = fast(E, D["trip"]), slow(E, D["trip"])
         ns, nl = unit_scale(fast_cal[warm], s), unit_scale(slow_cal[warm], l)
         if not use_slow: nl = np.full_like(nl, -np.inf)                            # stuck check only
@@ -62,18 +107,59 @@ def slow_stuck_scorer(E_cal, Dcal, cal_trips, a, use_slow=True):   # final model
         who = np.where(nl > ns, who_l, who)
         who = np.where(nf > np.maximum(ns, nl), np.array([CH.index(c) for c in FLAT_SENSORS])[f.argmax(1)], who)
         return np.maximum.reduce([ns, nl, nf]), who
-    return score, score(E_cal, Dcal, cal_trips)[0]
+    def score(E, D, trips, B=None):
+        sc, who = base(E, D, trips)
+        if bias is not None and B is not None:                                     # + bias score (without B: regular part only)
+            b, who_b = bias(B, D); nb = unit_scale(bias_cal[warm], b)
+            who = np.where(nb > sc, who_b, who); sc = np.maximum(sc, nb)
+        return sc, who
+    if bias is None: return score, score(E_cal, Dcal, cal_trips)[0]
+    # the bias part of the calibration scores is leave-one-out, so the alarm line reflects drives the bias fit has not seen
+    return score, np.maximum(base(E_cal, Dcal, cal_trips)[0], unit_scale(bias_cal[warm], bias_cal))
+
+def confirm(flags, n=3, k=2):
+    """EXPERIMENT (issue #33): OBD-II-style confirmation across drives. flags: one FAULT/HEALTHY verdict per judged drive,
+    in driving order. A drive is confirmed FAULT only if it is FAULT and at least k of the last n drives (itself included)
+    were FAULT, like a car's pending code that lights the check-engine lamp only when the fault comes back."""
+    f = np.asarray(flags, bool)
+    return f & (np.convolve(f, np.ones(n, int))[:len(f)] >= k)
+
+def confirm_bias(regular, combined):
+    """EXPERIMENT (issue #33): per-drive verdicts in driving order. A drive the regular score flags (regular) is FAULT at
+    once, as before; a drive that is FAULT only with the bias score added (combined) must be confirmed on 2 of the last 3
+    drives (confirm), because the bias score catches slow faults that persist from drive to drive."""
+    regular, combined = np.asarray(regular, bool), np.asarray(combined, bool)
+    return regular | confirm(combined)
 
 # ---- slow faults (dirty MAF): one signed number per drive, tracked from drive to drive ----
 GAP_Z = 3                  # a drive is FAULT if its gap is more than 3 of this car's normal spreads below its usual level
+MIN_GAP_DRIVES = 3         # calibration drives with a gap needed to learn the car's usual level and spread
 MIN_SPREAD = 0.02          # assumed: a healthy car's drive-to-drive gap varies by at least 2% (few calibration drives)
+# EXPERIMENT (issue #33): season correction. Cold air is denser, so a healthy MAF reads higher in winter than a model
+# that never saw cold air expects (ideal gas: about 0.35% per degree C). Off by default: it did not pass the bar
+# (model_build_guide.md, Step 10, item 9). --season-alpha 0.5 (half the ideal-gas correction) reproduces the test.
+SEASON_ALPHA = 0.0
+IAT_KELVIN = 273.15
 
-def drive_gaps(P, D, c, mu, sd, use, min_windows, floor=0.5):
+def intake_ref(D, mu, sd, use):
+    """Median intake air temperature (Kelvin) over the windows in `use` that have an intake reading; None if none do."""
+    i = CH.index("IAT"); ok = use & (D["m"][:, i].numpy() > 0)
+    if not ok.any(): return None
+    return float(np.median(D["x"][ok][:, :, i].numpy() * sd[i] + mu[i])) + IAT_KELVIN
+
+def drive_gaps(P, D, c, mu, sd, use, min_windows, floor=0.5, t_ref=None, alpha=SEASON_ALPHA):
     """Per drive: sum(measured) / sum(predicted) - 1 for sensor c over the windows in `use`. Signed and taken over the
     whole drive, so random prediction misses cancel out but a steady bias doesn't. `floor` (g/s for MAF) keeps idle
-    predictions near 0 from blowing up the ratio. Drives with fewer than `min_windows` usable windows are left out."""
+    predictions near 0 from blowing up the ratio. Drives with fewer than `min_windows` usable windows are left out.
+    With t_ref (Kelvin, intake_ref of the calibration windows), each reading is first multiplied by
+    ((intake temp + 273.15) / t_ref) ** alpha (season correction); windows without an intake reading are not corrected.
+    t_ref=None or alpha=0 gives the uncorrected gap."""
     ok = use & ~np.isnan(P[:, 0])
     meas = D["x"][ok][:, :, c].numpy() * sd[c] + mu[c]; pred = np.maximum(P[ok] * sd[c] + mu[c], floor)
+    if t_ref is not None and alpha:
+        i = CH.index("IAT"); has = D["m"][ok][:, i].numpy() > 0
+        temp = D["x"][ok][:, :, i].numpy() * sd[i] + mu[i] + IAT_KELVIN
+        meas = meas * np.where(has[:, None], (temp / t_ref) ** alpha, 1.0)
     g = pd.DataFrame(dict(trip=D["trip"][ok], m=meas.sum(1), p=pred.sum(1), n=1)).groupby("trip").sum()
     g = g[g.n >= min_windows]; return g.m / g.p - 1
 
@@ -91,6 +177,12 @@ def cusum(z, k=0.5, h=4):
         S = max(0, S + v - k)
         if S > h: return i
     return None
+
+def with_gap(verdict, gap_fault):
+    """Drive verdicts (bool Series by drive) OR the MAF drive-gap verdicts (bool Series by drive, or None if the car has no
+    gap check). Drives without a gap value keep their verdict."""
+    if gap_fault is None: return verdict
+    return verdict | gap_fault.reindex(verdict.index).fillna(False).astype(bool)
 
 def auroc(y, s):
     return roc_auc_score(y, s) if 0 < y.sum() < len(y) else np.nan
