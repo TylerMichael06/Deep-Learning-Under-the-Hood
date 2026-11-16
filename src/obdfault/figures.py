@@ -153,14 +153,14 @@ def fig_roc(rows):
 def fig_tradeoff(B):
     """Cutoff trade-off: catches vs false alarms per minute, final method, shared cutoff."""
     b = B[(B.method == FINAL["method"]) & (B.scoring == FINAL["scoring"]) & (B.level == "minute")].sort_values("cutoff")
-    names = {0.8: "most relaxed", 0.9: "Relaxed (chosen)", 0.95: "Medium", 0.975: "strict", 0.99: "strictest"}
+    names = {0.8: "80th pct.", 0.9: "90th pct. (chosen)", 0.95: "95th pct.", 0.975: "97.5th pct.", 0.99: "99th pct."}
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(b.false_alarm_rate * 100, b.recall * 100, color=BLUE, lw=2, marker="o", ms=7)
     for _, r in b.iterrows():
         ax.annotate(names.get(round(r.cutoff, 3), r.cutoff), (r.false_alarm_rate * 100, r.recall * 100), textcoords="offset points",
                     xytext=(7, -3), fontsize=8, color=INK, fontweight="bold" if r.cutoff == FINAL["cutoff"] else "normal")
     ax.set_xlabel("false alarms (% of clean minutes)"); ax.set_ylabel("faulty minutes caught (%)")
-    ax.set_title("Choosing the alarm line: catches vs false alarms", loc="left"); fig.tight_layout(); save(fig, "fig7_cutoff_tradeoff.png")
+    ax.set_title("Choosing the alarm threshold: catches vs false alarms", loc="left"); fig.tight_layout(); save(fig, "fig7_cutoff_tradeoff.png")
 
 # ------------------------------------------------------------------ 4. summary table
 def summary_table(B, R, syn):
