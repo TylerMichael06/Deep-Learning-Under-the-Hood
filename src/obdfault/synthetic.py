@@ -183,10 +183,10 @@ def timelines(rows, key, path, grace=0, n=4):
     for ax, (_, k) in zip(axes[:, 0], picks.iterrows()):
         r = rows[(rows.car == k.car) & (rows.drive == k.drive)]
         ax.plot(r.minute, r.score, color="#2a6fdb", lw=1.5, label="model score")
-        ax.axhline(r.threshold.iloc[0], color="#d62728", ls="--", lw=1, label="alarm line")
-        ax.fill_between(r.minute, r.score.min(), r.score.max(), where=r.truth, color="#ff9896", alpha=.3, label="fault really present")
+        ax.axhline(r.threshold.iloc[0], color="#d62728", ls="--", lw=1, label="alarm threshold")
+        ax.fill_between(r.minute, r.score.min(), r.score.max(), where=r.truth, color="#ff9896", alpha=.3, label="simulated fault present")
         ax.axvspan(r.minute.min(), grace, color="#bbbbbb", alpha=.35, label="warm-up (no alarms)") if grace else None
-        ax.scatter(r.minute[r.flagged], r.score[r.flagged], s=10, color="#d62728", zorder=3, label="FAULT minute")
+        ax.scatter(r.minute[r.flagged], r.score[r.flagged], s=10, color="#d62728", zorder=3, label="flagged minute")
         ax.set_title(f"{k.car}, drive {k.drive}: {k.fault}   ->  model says {k.model_says}"
                      + (f", blames {k.model_blames}" if k.model_blames else ""), fontsize=9)
         ax.set_xlabel("minutes into drive"); ax.set_ylabel("score")
