@@ -5,9 +5,9 @@ calibrated on the next 20% (same steps as obdfault.evaluate). Its last 40% of dr
 ~30% are left clean, the rest get one designed fault. A fault can start partway through the drive, so the true
 label is known minute by minute. The model's HEALTHY/FAULT labels are compared with that answer key.
 
-Final settings (same as obdfault.evaluate): the 2-minute score plus the stuck-sensor check, Relaxed cutoff (90th
-percentile of calibration scores), no alarms in the first 5 minutes of a drive, and a drive is FAULT if more than
-30% of its minutes are flagged. The other scorings (before the fixes, two-speed alarm) are printed for comparison.
+Final settings (same as obdfault.evaluate): the 2-minute score plus the stuck-sensor check and the MAP direction
+check, Relaxed cutoff (90th percentile of calibration scores), no alarms in the first 5 minutes of a drive, and a drive
+is FAULT if more than 30% of its minutes are flagged. The other scorings (before the fixes, two-speed alarm) are printed for comparison.
 
 Usage (from the repo root):
   python -m obdfault.synthetic
@@ -22,7 +22,7 @@ from .data import load_kaggle
 from .features import PHYSICS, windows
 from .model import resolve_device, channel_errors, channel_preds
 from .scoring import (calibrate, unit_scale, flat_minutes, FLAT_SENSORS, bias_scorer, drive_gaps, gap_z, GAP_Z, MIN_GAP_DRIVES,
-                      intake_ref, SEASON_ALPHA)
+                      intake_ref, SEASON_ALPHA, map_direction, add_map_direction)
 from .faults import maf_reacts, map_reacts
 from .train import prepare_car
 
@@ -108,12 +108,16 @@ def test_car(unit, trips, a, rng):
         b, who_b = bias(B, D); n_b, n_b_cal = unit_scale(b_cal[warm], b), unit_scale(b_cal[warm], b_cal)
         withb, withb_cal = np.maximum(only, n_b), np.maximum(only_cal, n_b_cal)
         who_withb = np.where(n_b > only, who_b, who_only)
-    truth = np.array([test[t]["truth"][st:st + W].mean() >= 0.5 for t, st in zip(D["trip"], D["start"])])
+    # stuck check + MAP direction check (issue #32): see obdfault.scoring.map_direction
+    j_map = CH.index("MAP"); check = map_direction(B_cal[:, j_map], Dc, a.smooth, max(a.graces))
+    mapc, who_map = add_map_direction(only, who_only, check(B[:, j_map], D["trip"]))
+    mapc_cal = np.maximum(only_cal, check(B_cal[:, j_map], Dc["trip"]))
+    truth =np.array([test[t]["truth"][st:st + W].mean() >= 0.5 for t, st in zip(D["trip"], D["start"])])
     name = lambda w: [CH[i] if i >= 0 else "" for i in w]
     rows = pd.DataFrame(dict(car=unit, drive=D["trip"], minute=(D["start"] + W) / STEPS_PER_MIN, truth=truth,
                              score=s, blamed=name(who), score_two=two, blamed_two=name(who_two),
                              score_stuck=stuck, blamed_stuck=name(who_stuck), score_only=only, blamed_only=name(who_only),
-                             score_bias=withb, blamed_bias=name(who_withb)))
+                             score_bias=withb, blamed_bias=name(who_withb), score_map=mapc, blamed_map=name(who_map)))
     for g in a.graces:                                  # alarm lines, one per variant and warm-up length
         ok = cal_min >= g
         rows[f"thr_{g}"] = np.quantile(s_cal[ok], a.cutoff)
@@ -121,6 +125,7 @@ def test_car(unit, trips, a, rng):
         rows[f"thr_stuck_{g}"] = np.quantile(stuck_cal[ok], a.cutoff)
         rows[f"thr_only_{g}"] = np.quantile(only_cal[ok], a.cutoff)
         rows[f"thr_bias_{g}"] = np.quantile(withb_cal[ok], a.cutoff)
+        rows[f"thr_map_{g}"] = np.quantile(mapc_cal[ok], a.cutoff)
     key = pd.DataFrame(key).assign(car=unit, truth=lambda k: np.where(k.fault == "clean", "HEALTHY", "FAULT"))
     # EXPERIMENT (issue #33): the MAF drive gap per test drive (see obdfault.evaluate.maf_gap_scores); False without the check
     j, g0 = CH.index("MAF"), max(a.graces)
@@ -135,8 +140,9 @@ def test_car(unit, trips, a, rng):
 
 VARIANTS = {"current (2-min score)": "", "two-speed (2 + 10 min)": "two", "two-speed + stuck check": "stuck",
             "stuck check (no two-speed)": "only", "stuck check + bias": "bias",   # "+ bias" = EXPERIMENT, issue #33
-            "stuck check + MAF drive gap": "only+gap"}                            # EXPERIMENT, issue #33: drive verdict OR gap
-FINAL_VARIANT = "only"      # final model: 2-minute score + stuck-sensor check
+            "stuck check + MAF drive gap": "only+gap",                            # EXPERIMENT, issue #33: drive verdict OR gap
+            "stuck check + MAP direction": "map"}                                 # issue #32
+FINAL_VARIANT = "map"       # final model: 2-minute score + stuck-sensor check + MAP direction check
 
 def decide(rows, key, g, rule, variant="", min_judge=6):
     """Apply the alarm with a g-minute warm-up grace period; fill in the model's verdict for every drive.
@@ -246,7 +252,7 @@ def main():
     print("\n=== drives labelled correctly, by fault ===\n", pd.concat(byfault, axis=1).assign(
         judged_drives=k[k.judged].groupby("fault").size()).to_string())
     rows, key = decide(rows0, key0, a.graces[0], a.drive_rule, FINAL_VARIANT)
-    print(f"\n(files and the table below use the final model: stuck check, {a.graces[0]}-minute warm-up)")
+    print(f"\n(files and the table below use the final model: stuck check + MAP direction, {a.graces[0]}-minute warm-up)")
     per = key[key.judged].groupby("fault").apply(lambda g: pd.Series(dict(
         drives=len(g), labelled_correctly=(g.model_says == g.truth).mean(),
         right_sensor=(g.model_blames == g.sensor)[g.model_says == "FAULT"].mean() if g.sensor.iloc[0] else np.nan,

@@ -17,8 +17,9 @@ BLUE, ORANGE, AQUA, INK, INK2, GRID, GREY = "#2a78d6", "#eb6834", "#1baf7a", "#0
 NICE = {"RPM": "RPM", "SPEED": "Speed (km/h)", "LOAD": "Engine load (%)", "THROTTLE": "Throttle (%)",
         "ECT": "Coolant temp (°C)", "IAT": "Intake air temp (°C)", "MAP": "Manifold pressure (kPa)",
         "MAF": "Mass air flow (g/s)", "STFT1": "Short-term fuel trim (%)"}
-FINAL = dict(method="fine-tuned (ours)", scoring="stuck check", cutoff=0.90, drive_rule=0.3, grace=5)
-SYN_VARIANT = {"shared cutoff": "", "stuck check": "only", "two-speed + stuck check": "stuck"}   # same scorings, as named in obdfault.synthetic
+FINAL = dict(method="fine-tuned (ours)", scoring="stuck check + MAP direction", cutoff=0.90, drive_rule=0.3, grace=5)
+SYN_VARIANT = {"shared cutoff": "", "stuck check": "only", "two-speed + stuck check": "stuck",
+               "stuck check + MAP direction": "map"}   # same scorings, as named in obdfault.synthetic
 
 plt.rcParams.update({"font.size": 9, "axes.edgecolor": INK2, "axes.labelcolor": INK2, "xtick.color": INK2,
                      "ytick.color": INK2, "axes.spines.top": False, "axes.spines.right": False,

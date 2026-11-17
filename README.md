@@ -12,7 +12,9 @@ Model by Hoda; step-by-step details in [`docs/model_build_guide.md`](docs/model_
 3. It learned what "normal" looks like from 15 healthy cars in the Kaggle OBD-II dataset.
 4. A prediction that is far off means something doesn't fit. That gap is the alarm score.
 5. A stuck-sensor check flags coolant/intake-temp readings frozen for longer than the car ever showed normally.
-6. A minute is FAULT if its score crosses the car's alarm line (the "Relaxed" line: the 90th percentile of the car's
+6. A direction check flags manifold pressure (MAP) when its prediction misses keep pointing the same way for 2 minutes,
+   which is how a sensor reading a few kPa high looks.
+7. A minute is FAULT if its score crosses the car's alarm line (the "Relaxed" line: the 90th percentile of the car's
    own normal scores). A drive is FAULT if more than 30% of its minutes are flagged, ignoring the first 5 minutes
    (warm-up). Drives with less than 1 minute after the warm-up (~6 min in total) are marked TOO SHORT to judge.
 
@@ -23,16 +25,19 @@ next 20%, and is tested on the last 40%.
 
 | Test | AUROC | Precision | Recall | F1 | False alarms |
 |---|---|---|---|---|---|
-| Main evaluation (8 cars), per drive | 0.80 | 0.88 | 0.63 | 0.73 | 9% |
+| Main evaluation (8 cars), per drive | 0.82 | 0.88 | 0.71 | 0.78 | 10% |
 | Synthetic test (67 drives), per drive | 0.75 | 0.89 | 0.74 | 0.81 | 20%* |
 
 Scores are on drives long enough to judge (about 1 in 4 test drives is too short).
 \* 3 of only 15 judged clean drives in the synthetic test.
 
-Baselines (same network without fine-tuning, per-car linear model): AUROC 0.76-0.77. Results vary by about ±0.03 between runs.
-Strongest on vacuum leaks and stuck coolant sensors (AUROC 0.96-0.97); weakest on small, steady airflow/pressure errors.
-The main-evaluation numbers include a hard new test fault (airflow sensor dirt building up over many drives), which is why
-they are slightly lower than before.
+Baselines: same network without fine-tuning AUROC 0.78, per-car linear model 0.77. Results vary by about ±0.03 between runs.
+Strongest on vacuum leaks and stuck coolant sensors (AUROC 0.95-0.97); weakest on slow airflow (MAF) drift and thermostat faults.
+The main-evaluation numbers include a hard test fault (airflow sensor dirt building up over many drives).
+
+**Manifold pressure (MAP) offset (issue #32):** the direction check raised a MAP sensor reading 10 kPa high from 12% to
+80% of faulty drives caught (AUROC 0.58 → 0.79, right sensor named 16% → 91%), with 1.2 percentage points more false
+alarms on the main test and none on the synthetic test. See guide Step 10, item 10.
 
 **Slow airflow-sensor (MAF) dirt:** a second check gives each drive one signed number (measured ÷ predicted airflow) and
 watches it from drive to drive. On the 4 cars with a MAF sensor it separates dirty from clean drives far better than the
