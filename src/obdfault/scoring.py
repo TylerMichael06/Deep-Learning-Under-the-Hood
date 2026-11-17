@@ -131,6 +131,50 @@ def confirm_bias(regular, combined):
     regular, combined = np.asarray(regular, bool), np.asarray(combined, bool)
     return regular | confirm(combined)
 
+# ---- MAP direction check (issue #32; part of the final scoring, "stuck check + MAP direction") ----------------------
+# A MAP sensor reading a few kPa high still looks normal to the 2-minute score: squaring the prediction error throws
+# away its direction, and while the throttle moves the healthy error is large anyway. This check keeps the direction:
+# MAP's signed error (from channel_errors/ridge_errors with signed=True), averaged over 2 minutes. Healthy errors swing
+# both ways and cancel out; an offset doesn't. Unlike the issue #33 bias score (a running total over the whole drive),
+# it only averages the last 2 minutes, so a small steady healthy offset can't keep adding up, and it only counts beyond
+# the 99th percentile of this car's calibration minutes (and then it is >= 1, above the alarm line), so it leaves the
+# alarm line for the other sensors where it was. (An idle-MAP check was also tried: it doubled false alarms on car1 and
+# car13, so it was dropped.)
+MAP_SCORING = "stuck check + MAP direction"
+MAP_Q = 0.99
+
+def map_direction(b_cal, Dcal, smooth, grace):
+    """Calibrates the direction check on this car's calibration drives (after the warm-up). b_cal: MAP's signed error per
+    calibration window. Returns check(b, trip) -> (N,): the signed error, z-scored and averaged over the last `smooth`
+    windows of the drive, in units of its calibration 99th percentile, only where it is beyond it (>= 1); -inf elsewhere
+    (nothing unusual, or no MAP)."""
+    off = lambda b, trip: np.full(len(trip), -np.inf)
+    if np.isnan(b_cal).all(): return off                                 # car has no MAP
+    mb, sb = np.nanmean(b_cal), np.nanstd(b_cal) + 1e-6
+    def avg(b, trip):
+        Z = pd.Series((b - mb) / sb)
+        return np.abs(Z.groupby(trip).transform(lambda c: c.rolling(smooth, min_periods=1).mean()).to_numpy())
+    warm = (Dcal["start"] + W) * DT / 60 >= grace
+    a_cal = avg(b_cal, Dcal["trip"])[warm]; a_cal = a_cal[~np.isnan(a_cal)]
+    if len(a_cal) < 20: return off                                       # too little calibration data: check off
+    tol = max(np.quantile(a_cal, MAP_Q), 1e-6)
+    def check(b, trip):
+        r = avg(b, trip) / tol
+        return np.where(r >= 1, r, -np.inf)                              # NaN (window lacks MAP) -> -inf
+    return check
+
+def add_map_direction(s, who, p):
+    """Score and blamed sensor with the direction check p added: the larger counts, and MAP is blamed when it wins."""
+    return np.maximum(s, p), np.where(p > s, CH.index("MAP"), who)
+
+def map_scorer(score0, s_cal0, B_cal, Dcal, a):
+    """An existing scorer (the stuck check) plus the MAP direction check. B_cal and B are the (N, C) signed errors;
+    score(E, D, trips, B)."""
+    j = CH.index("MAP"); check = map_direction(B_cal[:, j], Dcal, a.smooth, a.grace)
+    def score(E, D, trips, B=None):
+        return add_map_direction(*score0(E, D, trips), check(B[:, j], D["trip"]))
+    return score, np.maximum(s_cal0, check(B_cal[:, j], Dcal["trip"]))
+
 # ---- slow faults (dirty MAF): one signed number per drive, tracked from drive to drive ----
 GAP_Z = 3                  # a drive is FAULT if its gap is more than 3 of this car's normal spreads below its usual level
 MIN_GAP_DRIVES = 3         # calibration drives with a gap needed to learn the car's usual level and spread

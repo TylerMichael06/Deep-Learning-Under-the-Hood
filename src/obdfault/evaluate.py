@@ -21,6 +21,8 @@ Compared against: the pretrained model without fine-tuning, and a per-car linear
 
 Final settings (see model_build_guide.md, Step 7)
   - minute score = worst sensor's prediction error (averaged over 2 minutes) or the stuck-sensor check, whichever is larger
+  - plus the MAP direction check (issue #32): MAP's signed error averaged over 2 minutes, counted only beyond this car's
+    calibration 99th percentile (blames MAP when it wins)
   - alarm line = 90th percentile of the car's calibration scores ("Relaxed")
   - no alarms in the first 5 minutes of a drive (warm-up)
   - a drive is FAULT if more than 30% of its minutes are flagged; drives with under 1 minute after the warm-up are
@@ -41,7 +43,7 @@ from .data import load_kaggle, load_ved, load_kit, kit_winter_first
 from .features import PHYSICS, windows
 from .model import resolve_device, channel_errors, channel_preds, ridge_errors
 from .scoring import (calibrate, slow_stuck_scorer, auroc, confirm, confirm_bias, drive_gaps, gap_z, cusum, GAP_Z, MIN_GAP_DRIVES,
-                      with_gap, intake_ref, SEASON_ALPHA)
+                      with_gap, intake_ref, SEASON_ALPHA, map_scorer, MAP_SCORING)
 from .faults import ALL_FAULTS, FAULTS_SEQ, inject
 from .train import prepare_car, save_final
 
@@ -64,14 +66,15 @@ def evaluate_car(unit, trips, a):
     for name, errs in methods.items():
         Es, Bs = zip(*errs([Dcal, Dclean] + list(fault_sets.values())))     # squared and signed errors
         clean_ok = ~Dclean["code"]
-        # "stuck check" is the final scoring; the others are compared in the results
+        # MAP_SCORING ("stuck check + MAP direction", issue #32) is the final scoring; the others are compared in the results
         # (two-speed = EXPERIMENT, not kept; "+ bias" = EXPERIMENT for issue #33)
-        for scoring in ("shared cutoff", "stuck check", "two-speed + stuck check", "stuck check + bias"):
+        for scoring in ("shared cutoff", "stuck check", "two-speed + stuck check", "stuck check + bias", MAP_SCORING):
             if scoring == "shared cutoff":
                 sc, s_cal = calibrate(Es[0], Dcal["trip"], a.smooth); score = lambda E, D_, trips_, B=None: sc(E, D_["trip"])
             else:
                 score, s_cal = slow_stuck_scorer(Es[0], Dcal, P["cal_trips"], a, use_slow=scoring == "two-speed + stuck check",
                                                  B_cal=Bs[0] if scoring == "stuck check + bias" else None)
+                if scoring == MAP_SCORING: score, s_cal = map_scorer(score, s_cal, Bs[0], Dcal, a)
             s_clean, _ = score(Es[1], Dclean, test_trips, Bs[1])
             # regular part = the score without the bias part (same as the score for scorings without one), for confirm_bias
             regular = (lambda E, D_, trips_: score(E, D_, trips_)[0]) if scoring == "stuck check + bias" else None
@@ -278,6 +281,10 @@ def main():
     print(f"\n=== injected faults, mean over held-out cars (cutoff {q0}) ===\n",
           R0.groupby(["fault", "method"])[["AUROC", "window_detection", "drive_detection", "blamed_right_sensor"]].mean().round(3).to_string())
     print(f"\n=== overall (cutoff {q0}) ===\n", R0.groupby("method")[["AUROC", "window_detection", "drive_detection", "blamed_right_sensor", "false_alarm_rate"]].mean().round(3).to_string())
+    RM = R[(R.cutoff == q0) & (R.drive_rule == a.drive_rules[0]) & (R.method == "fine-tuned (ours)") & R.scoring.isin(["stuck check", MAP_SCORING])]
+    for m in ("AUROC", "drive_detection", "blamed_right_sensor", "false_alarm_rate"):   # one table per metric, scorings side by side
+        print(f"\n=== issue #32: {m}, stuck check vs {MAP_SCORING} (fine-tuned, cutoff {q0}) ===\n",
+              RM.groupby(["fault", "scoring"])[m].mean().unstack().round(3).to_string())
     print("\n=== binary classifier (FAULT = positive), all cars and faults pooled, every cutoff ===")
     B = binary_report(R); print(B.round(3).to_string(index=False))
     G = pd.concat(all_gap)

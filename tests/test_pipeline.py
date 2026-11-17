@@ -64,7 +64,8 @@ def test_pipeline_runs_end_to_end():
     trips = make_trips()
     R, summary, _ = evaluate_car("car2", trips, EVAL_ARGS)
     assert set(R.method) == {"pretrained only", "fine-tuned (ours)", "ridge baseline"}
-    assert set(R.scoring) == {"shared cutoff", "stuck check", "two-speed + stuck check", "stuck check + bias"}
+    assert set(R.scoring) == {"shared cutoff", "stuck check", "two-speed + stuck check", "stuck check + bias",
+                              "stuck check + MAP direction"}
     assert R.AUROC.notna().any() and R.AUROC.dropna().between(0, 1).all()
     assert summary.false_alarm_rate.between(0, 1).all()
     plain = R[R.scoring != "stuck check + bias"]               # no bias part: confirming bias alarms changes nothing
@@ -76,8 +77,9 @@ def test_pipeline_runs_end_to_end():
     assert {"drive (>30%), bias alarms confirmed on 2 of last 3 drives",
             "drive (>30%), all alarms confirmed (reported only) on 2 of last 3 drives"} <= levels
     rows, key = run_synthetic_car("car2", trips, SYN_ARGS, np.random.RandomState(42))
-    _, key = decide(rows, key, 5, 0.3, FINAL_VARIANT)
-    assert set(key.model_says) <= {"HEALTHY", "FAULT", "TOO SHORT"}
+    _, key_final = decide(rows, key, 5, 0.3, FINAL_VARIANT)
+    assert set(key_final.model_says) <= {"HEALTHY", "FAULT", "TOO SHORT"}
+    _, key = decide(rows, key, 5, 0.3, "only")                    # stuck check
     _, key_gap = decide(rows, key, 5, 0.3, "only+gap")             # stuck check OR the MAF drive gap
     assert ((key.model_says == "FAULT") <= (key_gap.model_says == "FAULT")).all()
     _, key_bias = decide(rows, key, 5, 0.3, "bias")
