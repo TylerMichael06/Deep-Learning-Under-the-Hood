@@ -1,4 +1,4 @@
-# OBD-II Fault Detection (DSCI 566)
+# OBD-II Fault Detection (CSCI 566)
 
 A small PyTorch **Transformer** that watches a car's OBD-II sensor readings and labels every minute, and every drive,
 **HEALTHY** or **FAULT**. When it raises an alarm, it also names the sensor that looks wrong.
